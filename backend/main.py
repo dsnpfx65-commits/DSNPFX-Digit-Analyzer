@@ -19,7 +19,7 @@ from backend.web_state import (
 BASE_DIR = Path(__file__).resolve().parent
 
 try:
-    from backend.core.volatility_web_runner import run_forever
+    from backend.core.all_volatility_web_runner import run_forever
 except Exception:
     run_forever = None
 
