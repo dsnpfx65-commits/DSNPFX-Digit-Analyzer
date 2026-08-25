@@ -67,6 +67,13 @@ class MarketDiscovery:
                             "symbol": symbol,
                             "name": name,
                             "type": self.classify(name),
+                            # New Deriv tick responses no longer guarantee
+                            # pip_size on every message. Preserve the symbol
+                            # precision metadata from active_symbols so the
+                            # live scanner can format the exact Options tick
+                            # consistently even when an individual tick omits
+                            # pip_size.
+                            "pip_size": item.get("pip_size"),
                         }
                     )
 
