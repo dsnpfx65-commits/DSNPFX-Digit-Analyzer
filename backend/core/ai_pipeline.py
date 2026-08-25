@@ -8,6 +8,7 @@ from backend.core.x2x_research_engine import X2XResearchEngine
 from backend.core.probability_analysis import ProbabilityAnalysisEngine
 from backend.core.hot_1000_continuation import Hot1000ContinuationEngine
 from backend.core.cold_reversion import ColdReversionEngine
+from backend.core.cold_20_differs import Cold20DiffersEngine
 
 
 class DSPFXAIPipeline:
@@ -25,6 +26,7 @@ class DSPFXAIPipeline:
     - Cautious 0-9 probability analysis with uncertainty shrinkage
     - Exact 1000-tick hot-digit continuation hypothesis
     - Cold-digit mean-reversion hypotheses over 200/500/1000 ticks
+    - Coldest digit over 20 ticks -> one-tick DIGITDIFF hypothesis
 
     Momentum remains disabled until an independent algorithm is implemented.
     """
@@ -48,6 +50,7 @@ class DSPFXAIPipeline:
         self.probability_analysis = ProbabilityAnalysisEngine(self.digits)
         self.hot_1000 = Hot1000ContinuationEngine(self.digits)
         self.cold_reversion = ColdReversionEngine(self.digits)
+        self.cold_20_differs = Cold20DiffersEngine(self.digits)
 
         for previous_digit, current_digit in zip(
             self.digits,
@@ -130,6 +133,7 @@ class DSPFXAIPipeline:
         probability_report = self.probability_analysis.analyse()
         hot_1000_report = self.hot_1000.analyse()
         cold_reversion_report = self.cold_reversion.analyse()
+        cold_20_differs_report = self.cold_20_differs.analyse()
 
         result["model_metadata"] = {
             "frequency": {
@@ -192,6 +196,7 @@ class DSPFXAIPipeline:
             "probability_analysis": probability_report,
             "hot_1000_continuation": hot_1000_report,
             "cold_reversion": cold_reversion_report,
+            "cold_20_differs": cold_20_differs_report,
         }
 
         return result
