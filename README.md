@@ -14,3 +14,5 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 The Bot Setup screen is currently a control UI only. It does not place live Deriv trades.
+
+Runtime import is automated on this redesign branch.
