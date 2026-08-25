@@ -11,7 +11,7 @@ if [ -f "$PID_FILE" ]; then
   fi
 fi
 
-nohup python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 >"$LOG_FILE" 2>&1 &
+nohup python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload >"$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 
 for _ in $(seq 1 30); do
@@ -24,7 +24,7 @@ except Exception:
 raise SystemExit(0)
 PY
   then
-    echo "DSNPFX Market Insight is running on port 8000"
+    echo "DSNPFX Market Insight is running on port 8000 (auto-reload enabled)"
     exit 0
   fi
   sleep 1
