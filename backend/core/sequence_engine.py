@@ -3,14 +3,11 @@ from collections import Counter, defaultdict
 
 class SequenceEngine:
     """
-    DSNPFX Sequence Memory Engine
+    DSNPFX support-aware N-gram sequence engine.
 
-    Learns:
-    - 2 digit patterns
-    - 3 digit patterns
-    - 4 digit patterns
-    - 5 digit patterns
-    - What digit usually follows
+    Learns 2-, 3-, 4- and 5-digit contexts and the digit that followed each
+    context. Longer patterns are only preferred when they have enough observed
+    support; otherwise the engine backs off to a shorter context.
     """
 
     def __init__(self, digits):
@@ -24,28 +21,18 @@ class SequenceEngine:
         self.build_patterns()
 
     def build_patterns(self):
-        # Two digit sequence memory
         for i in range(len(self.digits) - 2):
-            pattern = (
-                self.digits[i],
-                self.digits[i + 1],
-            )
+            pattern = (self.digits[i], self.digits[i + 1])
+            self.pattern_2[pattern][self.digits[i + 2]] += 1
 
-            next_digit = self.digits[i + 2]
-            self.pattern_2[pattern][next_digit] += 1
-
-        # Three digit sequence memory
         for i in range(len(self.digits) - 3):
             pattern = (
                 self.digits[i],
                 self.digits[i + 1],
                 self.digits[i + 2],
             )
+            self.pattern_3[pattern][self.digits[i + 3]] += 1
 
-            next_digit = self.digits[i + 3]
-            self.pattern_3[pattern][next_digit] += 1
-
-        # Four digit sequence memory
         for i in range(len(self.digits) - 4):
             pattern = (
                 self.digits[i],
@@ -53,11 +40,8 @@ class SequenceEngine:
                 self.digits[i + 2],
                 self.digits[i + 3],
             )
+            self.pattern_4[pattern][self.digits[i + 4]] += 1
 
-            next_digit = self.digits[i + 4]
-            self.pattern_4[pattern][next_digit] += 1
-
-        # Five digit sequence memory
         for i in range(len(self.digits) - 5):
             pattern = (
                 self.digits[i],
@@ -66,89 +50,79 @@ class SequenceEngine:
                 self.digits[i + 3],
                 self.digits[i + 4],
             )
+            self.pattern_5[pattern][self.digits[i + 5]] += 1
 
-            next_digit = self.digits[i + 5]
-            self.pattern_5[pattern][next_digit] += 1
-
-    def _build_result(self, pattern, results):
+    def _build_result(self, pattern, results, pattern_length):
         if not results:
             return None
 
         total = sum(results.values())
-
         prediction = max(
             results,
-            key=results.get,
+            key=lambda digit: (results[digit], -digit),
         )
-
-        confidence = round(
-            (results[prediction] / total) * 100,
-            2,
-        )
+        support = int(total)
+        confidence = round(results[prediction] / total * 100.0, 2)
 
         return {
             "pattern": pattern,
+            "pattern_length": pattern_length,
             "prediction": prediction,
             "confidence": confidence,
-            "support": total,
+            "support": support,
             "matches": dict(results),
         }
 
-    def predict_from_two(self):
-        if len(self.digits) < 3:
+    def _predict_length(self, length):
+        if len(self.digits) < length + 1:
             return None
 
-        pattern = tuple(self.digits[-2:])
-        results = self.pattern_2[pattern]
+        pattern = tuple(self.digits[-length:])
+        table = getattr(self, f"pattern_{length}")
+        return self._build_result(pattern, table[pattern], length)
 
-        return self._build_result(pattern, results)
+    def predict_from_two(self):
+        return self._predict_length(2)
 
     def predict_from_three(self):
-        if len(self.digits) < 4:
-            return None
-
-        pattern = tuple(self.digits[-3:])
-        results = self.pattern_3[pattern]
-
-        return self._build_result(pattern, results)
+        return self._predict_length(3)
 
     def predict_from_four(self):
-        if len(self.digits) < 5:
-            return None
-
-        pattern = tuple(self.digits[-4:])
-        results = self.pattern_4[pattern]
-
-        return self._build_result(pattern, results)
+        return self._predict_length(4)
 
     def predict_from_five(self):
-        if len(self.digits) < 6:
-            return None
+        return self._predict_length(5)
 
-        pattern = tuple(self.digits[-5:])
-        results = self.pattern_5[pattern]
+    def predict(self, min_support: int = 3):
+        """Return the longest context with enough historical support.
 
-        return self._build_result(pattern, results)
-
-    def predict(self):
+        A high percentage from one or two historical occurrences is not treated
+        as reliable evidence. If no context reaches ``min_support``, the best
+        available result is returned as research metadata with ``qualified``
+        set to False so callers can keep it out of production voting.
         """
-        Uses the longest matching pattern first.
+        min_support = max(1, int(min_support))
+        candidates = []
 
-        Backoff order:
-        5 digits -> 4 digits -> 3 digits -> 2 digits
-        """
+        for length in (5, 4, 3, 2):
+            result = self._predict_length(length)
+            if result is None:
+                continue
 
-        predictors = (
-            self.predict_from_five,
-            self.predict_from_four,
-            self.predict_from_three,
-            self.predict_from_two,
-        )
+            result = dict(result)
+            result["qualified"] = result["support"] >= min_support
+            result["minimum_support"] = min_support
+            candidates.append(result)
 
-        for predictor in predictors:
-            result = predictor()
-
-            if result is not None:
+            if result["qualified"]:
                 return result
 
-        return None
+        if not candidates:
+            return None
+
+        # Research-only fallback: choose the context with the most support,
+        # breaking ties in favour of the longer pattern.
+        return max(
+            candidates,
+            key=lambda item: (item["support"], item["pattern_length"]),
+        )
