@@ -1,0 +1,53 @@
+name: Import recovered DSNPFX runtime
+
+on:
+  push:
+    branches:
+      - redesign-market-insight
+
+permissions:
+  contents: write
+
+jobs:
+  import-runtime:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out redesign branch
+        uses: actions/checkout@v4
+        with:
+          ref: redesign-market-insight
+          fetch-depth: 0
+
+      - name: Extract recovered clean runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .bootstrap/DSNPFX-RUNTIME.zip ]; then
+            echo "Runtime archive already imported."
+            exit 0
+          fi
+          unzip -q -o .bootstrap/DSNPFX-RUNTIME.zip -d .
+          rm -rf .bootstrap
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find . -type f \( -name '*.pyc' -o -name '*_backup.py' -o -name '*.bak' \) -delete
+
+      - name: Validate Python source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q backend
+
+      - name: Commit imported runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "DSNPFX Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Import recovered DSNPFX runtime and Market Insight redesign"
+          git push origin HEAD:redesign-market-insight
