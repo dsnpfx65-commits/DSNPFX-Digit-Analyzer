@@ -1,8 +1,9 @@
-"""DSNPFX V9 X2X research detector.
+"""DSNPFX V9 strict X2X research detector.
 
-An X2X pattern is any three-digit suffix where the first and third digits
-match (for example 5-2-5). This engine only exposes measurable research
-telemetry; it does not claim that X2X predicts the next digit.
+A strict X2X pattern is a three-digit suffix where the first and third digits
+match AND the middle digit is exactly 2 (for example 5-2-5). Other ABA patterns
+such as 5-3-5 are deliberately excluded. This engine only exposes measurable
+research telemetry; it does not claim that X2X predicts the next digit.
 """
 
 from __future__ import annotations
@@ -12,37 +13,30 @@ class X2XResearchEngine:
     def __init__(self, digits):
         self.digits = [int(digit) for digit in digits]
 
+    def _empty(self, pattern=None) -> dict:
+        return {
+            "active": False,
+            "pattern": pattern,
+            "outer_digit": None,
+            "middle_digit": None,
+            "occurrences": 0,
+            "next_digit_counts": {},
+            "candidate": None,
+            "candidate_support": 0,
+            "candidate_confidence": 0.0,
+            "strict_middle_digit": 2,
+            "scope": "RESEARCH_ONLY",
+        }
+
     def analyse(self) -> dict:
         if len(self.digits) < 3:
-            return {
-                "active": False,
-                "pattern": None,
-                "outer_digit": None,
-                "middle_digit": None,
-                "occurrences": 0,
-                "next_digit_counts": {},
-                "candidate": None,
-                "candidate_support": 0,
-                "candidate_confidence": 0.0,
-                "scope": "RESEARCH_ONLY",
-            }
+            return self._empty()
 
         pattern = tuple(self.digits[-3:])
-        active = pattern[0] == pattern[2]
+        active = pattern[0] == pattern[2] and pattern[1] == 2
 
         if not active:
-            return {
-                "active": False,
-                "pattern": pattern,
-                "outer_digit": None,
-                "middle_digit": None,
-                "occurrences": 0,
-                "next_digit_counts": {},
-                "candidate": None,
-                "candidate_support": 0,
-                "candidate_confidence": 0.0,
-                "scope": "RESEARCH_ONLY",
-            }
+            return self._empty(pattern)
 
         outer = pattern[0]
         middle = pattern[1]
@@ -81,5 +75,6 @@ class X2XResearchEngine:
             "candidate": candidate,
             "candidate_support": candidate_support,
             "candidate_confidence": candidate_confidence,
+            "strict_middle_digit": 2,
             "scope": "RESEARCH_ONLY",
         }
