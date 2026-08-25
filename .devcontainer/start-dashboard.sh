@@ -3,6 +3,8 @@ set -euo pipefail
 
 PID_FILE="/tmp/dsnpfx-dashboard.pid"
 LOG_FILE="/tmp/dsnpfx-dashboard.log"
+COMMIT_FILE="/tmp/dsnpfx-dashboard.commit"
+CURRENT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 
 health_ok() {
   python - <<'PY'
@@ -19,20 +21,29 @@ raise SystemExit(0 if payload.get('status') == 'ok' else 1)
 PY
 }
 
-# A healthy already-running dashboard should be left alone.
-if health_ok; then
-  echo "DSNPFX Market Insight is already healthy on port 8000"
+running_commit=""
+if [ -f "$COMMIT_FILE" ]; then
+  running_commit="$(cat "$COMMIT_FILE" 2>/dev/null || true)"
+fi
+
+# Leave the server alone only when it is healthy AND it was launched from the
+# same git commit. After a pull, a healthy old process must be restarted so the
+# browser actually serves the newly checked-out frontend/backend code.
+if health_ok && [ -n "$running_commit" ] && [ "$running_commit" = "$CURRENT_COMMIT" ]; then
+  echo "DSNPFX Market Insight is already healthy on port 8000 ($CURRENT_COMMIT)"
   exit 0
 fi
 
-# If the old parent process exists but the HTTP service is unhealthy, stop it
-# before starting a fresh server. This avoids a stale PID making Codespaces
-# believe the dashboard is running when the browser can no longer reach it.
+if health_ok; then
+  echo "DSNPFX Market Insight is healthy but serving an older checkout; restarting..."
+fi
+
+# Stop only the PID previously launched by this dashboard script.
 if [ -f "$PID_FILE" ]; then
   PID="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
     kill "$PID" 2>/dev/null || true
-    for _ in $(seq 1 10); do
+    for _ in $(seq 1 15); do
       if ! kill -0 "$PID" 2>/dev/null; then
         break
       fi
@@ -40,18 +51,28 @@ if [ -f "$PID_FILE" ]; then
     done
   fi
 fi
-rm -f "$PID_FILE"
+rm -f "$PID_FILE" "$COMMIT_FILE"
+
+# If port 8000 is still healthy after the recorded process was stopped, an old
+# child/worker is still serving it. Stop only listeners on this dedicated
+# Codespaces dashboard port; never use a broad pkill pattern.
+if health_ok; then
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k 8000/tcp >/dev/null 2>&1 || true
+    sleep 1
+  fi
+fi
 
 # Run a single stable Uvicorn process. Codespaces restarts this script on each
-# container start, so development reload mode is unnecessary and less stable
-# for a long-running live tick scanner.
+# container start, so reload mode is unnecessary for normal operation.
 nohup python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 >"$LOG_FILE" 2>&1 &
 PID=$!
 echo "$PID" > "$PID_FILE"
+echo "$CURRENT_COMMIT" > "$COMMIT_FILE"
 
 for _ in $(seq 1 45); do
   if health_ok; then
-    echo "DSNPFX Market Insight is running on port 8000"
+    echo "DSNPFX Market Insight is running on port 8000 ($CURRENT_COMMIT)"
     exit 0
   fi
 
@@ -63,5 +84,5 @@ done
 
 echo "DSNPFX dashboard did not start. Recent log output:"
 tail -n 100 "$LOG_FILE" || true
-rm -f "$PID_FILE"
+rm -f "$PID_FILE" "$COMMIT_FILE"
 exit 1
