@@ -6,11 +6,11 @@ Deriv Volatility instrument supports Digits contracts.
 
 Discovery works in two stages:
 1. Use Deriv's public Options active_symbols response.
-2. Probe known fixed-Volatility symbol candidates for a real public tick.
+2. Probe known fixed-Volatility symbol candidates for a real public Options tick.
 
-Only symbols that actually return a tick are subscribed to the intelligence
-engine. Newly discovered symbols stay SHADOW by default; the existing
-production accuracy gate is not weakened.
+Only symbols that actually return an Options tick are subscribed to the
+intelligence engine. Newly discovered symbols stay SHADOW by default; the
+existing production accuracy gate is not weakened.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from backend.web_state import publish_state
 
 # Current Deriv fixed-Volatility naming families. A symbol is NOT accepted just
 # because it appears here: _probe_tick_candidates requires the live Deriv API
-to return a real tick before we add it to the scanner.
+# to return a real Options tick before we add it to the scanner.
 VOLATILITY_CANDIDATES = {
     "R_5": "Volatility 5",
     "1HZ5V": "Volatility 5 (1s)",
@@ -64,11 +64,13 @@ def _named_market_payload(result, latest_ticks):
     payload = _ORIGINAL_MARKET_PAYLOAD(result, latest_ticks)
     symbol = payload.get("symbol")
     payload["name"] = _MARKET_NAMES.get(symbol, symbol)
+    payload["price_source"] = "DERIV_OPTIONS"
+    payload["price_source_label"] = "Deriv Options / Digits"
     return payload
 
 
-# Add discovery names to the existing tested payload without changing its
-# evidence or signal logic.
+# Add discovery names and explicit source metadata to the existing tested
+# payload without changing its evidence or signal logic.
 base._market_payload = _named_market_payload
 
 # V9 prospective collector runs beside the production scanner. It creates one
@@ -77,9 +79,9 @@ base._market_payload = _named_market_payload
 install_v9_shadow_collector(base)
 
 
-async def _probe_tick_candidates(symbols: set[str]) -> set[str]:
-    """Return only candidate symbols that produce a real Deriv tick."""
-    confirmed: set[str] = set()
+async def _probe_tick_candidates(symbols: set[str]) -> dict[str, dict]:
+    """Return candidate metadata only for symbols producing a real Options tick."""
+    confirmed: dict[str, dict] = {}
 
     if not symbols:
         return confirmed
@@ -92,14 +94,9 @@ async def _probe_tick_candidates(symbols: set[str]) -> set[str]:
         max_queue=None,
     ) as websocket:
         for symbol in sorted(symbols):
-            await websocket.send(
-                json.dumps(
-                    {
-                        "ticks": symbol,
-                        "subscribe": 0,
-                    }
-                )
-            )
+            # Snapshot tick request. Omitting subscribe is intentional: the
+            # probe only validates that this exact Options/Digits symbol exists.
+            await websocket.send(json.dumps({"ticks": symbol}))
 
             try:
                 raw = await asyncio.wait_for(
@@ -120,7 +117,9 @@ async def _probe_tick_candidates(symbols: set[str]) -> set[str]:
 
             returned_symbol = tick.get("symbol")
             if returned_symbol == symbol:
-                confirmed.add(symbol)
+                confirmed[symbol] = {
+                    "pip_size": tick.get("pip_size"),
+                }
 
     return confirmed
 
@@ -163,20 +162,21 @@ async def _refresh_volatility_universe() -> list[dict]:
             type(error).__name__,
             error,
         )
-        tick_confirmed = set()
+        tick_confirmed = {}
 
-    for symbol in tick_confirmed:
+    for symbol, tick_meta in tick_confirmed.items():
         merged[symbol] = {
             "symbol": symbol,
             "name": VOLATILITY_CANDIDATES[symbol],
             "type": "VOLATILITY",
-            "discovery_source": "TICK_PROBE",
+            "pip_size": tick_meta.get("pip_size"),
+            "discovery_source": "OPTIONS_TICK_PROBE",
         }
 
     markets = list(merged.values())
 
     if not markets:
-        raise RuntimeError("No live Deriv Volatility markets discovered")
+        raise RuntimeError("No live Deriv Options Volatility markets discovered")
 
     symbols = set(merged)
 
@@ -196,8 +196,8 @@ async def _refresh_volatility_universe() -> list[dict]:
     )
 
     # base.run_once performs its own MarketDiscovery pass and requires every
-    # monitored symbol to be returned. Freeze this verified merged universe for
-    # that cycle rather than falling back to the legacy 10-symbol response.
+    # monitored symbol to be returned. Freeze this verified merged Options
+    # universe for that cycle rather than falling back to the legacy response.
     frozen = _MergedVolatilityDiscovery(markets)
 
     class CycleDiscovery:
@@ -219,9 +219,11 @@ async def run_forever():
                 {
                     "status": "collecting",
                     "message": (
-                        f"Confirmed {len(markets)} live Deriv Volatility "
-                        "markets. Connecting intelligence scanner..."
+                        f"Confirmed {len(markets)} live Deriv Options Volatility "
+                        "markets. Connecting digit intelligence scanner..."
                     ),
+                    "price_source": "DERIV_OPTIONS",
+                    "price_source_label": "Deriv Options / Digits",
                     "markets_monitoring": symbols,
                     "market_count": len(markets),
                     "decision": "WAIT",
@@ -239,9 +241,11 @@ async def run_forever():
                 {
                     "status": "reconnecting",
                     "message": (
-                        "Volatility feed disconnected. Rediscovering and "
-                        "re-probing live Deriv Volatility markets..."
+                        "Deriv Options Volatility feed disconnected. "
+                        "Rediscovering and re-probing live Digit markets..."
                     ),
+                    "price_source": "DERIV_OPTIONS",
+                    "price_source_label": "Deriv Options / Digits",
                     "markets_monitoring": sorted(base.VOLATILITY_SYMBOLS),
                     "market_count": len(base.VOLATILITY_SYMBOLS),
                     "decision": "WAIT",
