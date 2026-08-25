@@ -28,19 +28,31 @@ try:
 except Exception:
     run_forever = None
 
+try:
+    from backend.core.proposal_quote_service import run_proposal_quote_loop
+except Exception:
+    run_proposal_quote_loop = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = None
+    tasks = []
     if run_forever is not None:
-        task = asyncio.create_task(run_forever())
+        tasks.append(asyncio.create_task(run_forever(), name="dsnpfx-market-runner"))
+    if run_proposal_quote_loop is not None:
+        tasks.append(
+            asyncio.create_task(
+                run_proposal_quote_loop(),
+                name="dsnpfx-proposal-quotes",
+            )
+        )
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 app = FastAPI(title="DSNPFX Market Insight AI", lifespan=lifespan)
@@ -61,6 +73,7 @@ async def health():
         "market_count": current.get("market_count", 0),
         "live_market_count": current.get("live_market_count", 0),
         "scanner_loaded": run_forever is not None,
+        "proposal_quotes_loaded": run_proposal_quote_loop is not None,
     }
 
 
@@ -152,8 +165,6 @@ async def prediction_history_csv():
                 ).fetchall()
                 for row in rows:
                     payload = {column: row[column] for column in selected}
-                    # Normalise JSON text fields so malformed legacy rows do not
-                    # break spreadsheet imports while preserving the raw object.
                     for name in (
                         "model_predictions",
                         "model_weights",
