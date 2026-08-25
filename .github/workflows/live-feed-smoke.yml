@@ -37,11 +37,14 @@ jobs:
       - name: Validate dashboard JavaScript
         run: |
           node --check backend/static/js/dashboard.js
+          node --check backend/static/js/proposal-edge.js
           node --check backend/static/js/evidence-watch.js
-          grep -q 'evidence-watch.js' backend/templates/index.html
-          grep -q 'evidenceWatchBody' backend/templates/index.html
+          grep -q 'proposal-edge.js' backend/templates/index.html
+          grep -q 'proposal-edge.css' backend/templates/index.html
+          grep -q 'Live DIGITMATCH Proposal Edge' backend/templates/index.html
           grep -q 'Digit Contract Tick' backend/templates/index.html
-          grep -q 'DERIV OPTIONS' backend/templates/index.html
+          grep -q 'Source</span><strong>OPTIONS' backend/templates/index.html
+          grep -q 'evidenceWatchBody' backend/templates/index.html
           echo 'dashboard JavaScript PASS'
 
       - name: Compile active backend
@@ -63,10 +66,12 @@ jobs:
           print('active backend compile PASS')
           PY
 
-      - name: Verify V9 research engines
+      - name: Verify V9 research and proposal engines
         run: |
           python - <<'PY'
           from backend.core.ai_pipeline import DSPFXAIPipeline
+          from backend.core.probability_analysis import ProbabilityAnalysisEngine
+          from backend.core.proposal_quote_service import calculate_break_even_probability
           from backend.core.sequence_engine import SequenceEngine
           from backend.core.statistical_digit_engine import StatisticalDigitEngine
           from backend.core.x2x_research_engine import X2XResearchEngine
@@ -77,18 +82,34 @@ jobs:
           assert stats['status'] == 'READY'
           assert stats['scope'] == 'RESEARCH_ONLY'
 
-          x2x = X2XResearchEngine([5,2,5,7,5,2,5]).analyse()
-          assert x2x['active'] is True
-          assert x2x['pattern'] == (5,2,5)
+          strict_x2x = X2XResearchEngine([5,2,5,7,5,2,5]).analyse()
+          assert strict_x2x['active'] is True
+          assert strict_x2x['pattern'] == (5,2,5)
+          assert strict_x2x['strict_middle_digit'] == 2
+
+          non_x2x = X2XResearchEngine([5,3,5]).analyse()
+          assert non_x2x['active'] is False
 
           sequence = SequenceEngine(digits).predict(min_support=3)
           assert sequence is None or 'support' in sequence
 
+          probability = ProbabilityAnalysisEngine(digits).analyse()
+          assert probability['scope'] == 'RESEARCH_ONLY'
+          assert probability['calibrated'] is False
+          assert 0 <= probability['best_match_digit'] <= 9
+          assert abs(sum(probability['digit_probabilities_pct'].values()) - 100.0) < 0.1
+
+          break_even = calculate_break_even_probability(1.0, 9.25)
+          assert break_even is not None
+          assert 10.7 < break_even < 10.9
+
           pipeline = DSPFXAIPipeline(digits).run()
           assert pipeline['model_weights']['transition'] == 0.0
-          assert 'statistical_deviation' in pipeline['model_metadata']
-          assert 'x2x' in pipeline['model_metadata']
-          print('V9 research engine PASS')
+          metadata = pipeline['model_metadata']
+          assert 'statistical_deviation' in metadata
+          assert 'x2x' in metadata
+          assert 'probability_analysis' in metadata
+          print('V9 research + proposal engine PASS')
           PY
 
       - name: Start Market Insight app
@@ -133,6 +154,7 @@ jobs:
                       metadata = sample.get('model_metadata') or {}
                       assert 'statistical_deviation' in metadata
                       assert 'x2x' in metadata
+                      assert 'probability_analysis' in metadata
                       assert sample.get('price_source') == 'DERIV_OPTIONS'
                       print('LIVE FEED PASS:', sample.get('symbol'), sample.get('displayed_price'), 'digit', sample.get('last_digit'), 'source', sample.get('price_source'), 'candidate', sample.get('candidate_prediction'), 'decision', sample.get('decision'))
                       raise SystemExit(0)
