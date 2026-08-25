@@ -1,0 +1,97 @@
+name: DSNPFX live feed smoke test
+
+on:
+  push:
+    branches:
+      - redesign-market-insight
+    paths:
+      - .github/workflows/live-feed-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-feed-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out redesign branch
+        uses: actions/checkout@v4
+        with:
+          ref: redesign-market-insight
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: python -m pip install -q -r requirements.txt
+
+      - name: Start Market Insight app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/dsnpfx-smoke
+          uvicorn backend.main:app --host 127.0.0.1 --port 8000 > /tmp/dsnpfx-smoke/app.log 2>&1 &
+          echo $! > /tmp/dsnpfx-smoke/pid
+
+      - name: Verify live Deriv ticks reach dashboard state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import time
+          import urllib.request
+
+          def get_json(path):
+              with urllib.request.urlopen(f'http://127.0.0.1:8000{path}', timeout=5) as response:
+                  return json.load(response)
+
+          deadline = time.time() + 70
+          last_state = None
+          last_markets = None
+          while time.time() < deadline:
+              try:
+                  health = get_json('/api/health')
+                  state = get_json('/api/state')
+                  market_payload = get_json('/api/markets')
+                  last_state = state
+                  last_markets = market_payload
+                  markets = market_payload.get('markets', [])
+                  live = [m for m in markets if str(m.get('status', '')).lower() == 'live']
+                  priced = [m for m in markets if m.get('displayed_price') is not None and m.get('last_digit') is not None]
+                  print('health=', health)
+                  print('state_status=', state.get('status'), 'market_count=', state.get('market_count'), 'live_market_count=', state.get('live_market_count'))
+                  print('markets=', len(markets), 'live=', len(live), 'priced=', len(priced))
+                  if health.get('scanner_loaded') and len(markets) == 10 and len(live) >= 1 and len(priced) >= 1:
+                      sample = priced[0]
+                      print('LIVE FEED PASS:', sample.get('symbol'), sample.get('displayed_price'), 'digit', sample.get('last_digit'), 'decision', sample.get('decision'))
+                      raise SystemExit(0)
+              except SystemExit:
+                  raise
+              except Exception as exc:
+                  print('waiting:', type(exc).__name__, exc)
+              time.sleep(3)
+
+          print('LAST STATE:', last_state)
+          print('LAST MARKETS:', last_markets)
+          raise SystemExit('Live Deriv ticks did not reach dashboard state before timeout')
+          PY
+
+      - name: Show app log on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo '===== DSNPFX APP LOG ====='
+          cat /tmp/dsnpfx-smoke/app.log || true
+
+      - name: Stop app
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/dsnpfx-smoke/pid ]; then
+            kill "$(cat /tmp/dsnpfx-smoke/pid)" 2>/dev/null || true
+          fi
