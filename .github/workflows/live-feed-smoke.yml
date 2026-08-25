@@ -45,6 +45,8 @@ jobs:
           grep -q 'Digit Contract Tick' backend/templates/index.html
           grep -q 'Source</span><strong>OPTIONS' backend/templates/index.html
           grep -q 'evidenceWatchBody' backend/templates/index.html
+          grep -q 'HOT 1000 CONTINUATION' backend/static/js/proposal-edge.js
+          grep -q 'hot_1000_continuation' backend/static/js/proposal-edge.js
           echo 'dashboard JavaScript PASS'
 
       - name: Compile active backend
@@ -70,6 +72,7 @@ jobs:
         run: |
           python - <<'PY'
           from backend.core.ai_pipeline import DSPFXAIPipeline
+          from backend.core.hot_1000_continuation import Hot1000ContinuationEngine
           from backend.core.probability_analysis import ProbabilityAnalysisEngine
           from backend.core.proposal_quote_service import calculate_break_even_probability
           from backend.core.sequence_engine import SequenceEngine
@@ -99,6 +102,22 @@ jobs:
           assert 0 <= probability['best_match_digit'] <= 9
           assert abs(sum(probability['digit_probabilities_pct'].values()) - 100.0) < 0.1
 
+          hot_digits = ([0,1,2,3,4,5,6,7,8,9] * 95) + ([9] * 50)
+          assert len(hot_digits) == 1000
+          hot = Hot1000ContinuationEngine(hot_digits).analyse()
+          assert hot['scope'] == 'RESEARCH_ONLY'
+          assert hot['strategy'] == 'HOT_1000_CONTINUATION'
+          assert hot['status'] == 'READY'
+          assert hot['candidate'] == 9
+          assert hot['duration'] == 1
+          assert hot['duration_unit'] == 't'
+          assert hot['frequency_pct'] == 14.5
+          assert hot['forward_validation_required'] is True
+
+          collecting = Hot1000ContinuationEngine(digits).analyse()
+          assert collecting['status'] == 'COLLECTING'
+          assert collecting['candidate'] is None
+
           break_even = calculate_break_even_probability(1.0, 9.25)
           assert break_even is not None
           assert 10.7 < break_even < 10.9
@@ -109,7 +128,9 @@ jobs:
           assert 'statistical_deviation' in metadata
           assert 'x2x' in metadata
           assert 'probability_analysis' in metadata
-          print('V9 research + proposal engine PASS')
+          assert 'hot_1000_continuation' in metadata
+          assert metadata['hot_1000_continuation']['status'] == 'COLLECTING'
+          print('V9 research + proposal + HOT1000 engine PASS')
           PY
 
       - name: Start Market Insight app
@@ -155,8 +176,9 @@ jobs:
                       assert 'statistical_deviation' in metadata
                       assert 'x2x' in metadata
                       assert 'probability_analysis' in metadata
+                      assert 'hot_1000_continuation' in metadata
                       assert sample.get('price_source') == 'DERIV_OPTIONS'
-                      print('LIVE FEED PASS:', sample.get('symbol'), sample.get('displayed_price'), 'digit', sample.get('last_digit'), 'source', sample.get('price_source'), 'candidate', sample.get('candidate_prediction'), 'decision', sample.get('decision'))
+                      print('LIVE FEED PASS:', sample.get('symbol'), sample.get('displayed_price'), 'digit', sample.get('last_digit'), 'source', sample.get('price_source'), 'candidate', sample.get('candidate_prediction'), 'decision', sample.get('decision'), 'hot1000', metadata.get('hot_1000_continuation', {}).get('status'))
                       raise SystemExit(0)
               except SystemExit:
                   raise
