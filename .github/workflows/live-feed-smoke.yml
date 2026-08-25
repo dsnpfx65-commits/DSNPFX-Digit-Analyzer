@@ -38,8 +38,10 @@ jobs:
         run: |
           node --check backend/static/js/dashboard.js
           node --check backend/static/js/evidence-watch.js
-          grep -q 'evidence-watch.js?v=12' backend/templates/index.html
+          grep -q 'evidence-watch.js' backend/templates/index.html
           grep -q 'evidenceWatchBody' backend/templates/index.html
+          grep -q 'Digit Contract Tick' backend/templates/index.html
+          grep -q 'DERIV OPTIONS' backend/templates/index.html
           echo 'dashboard JavaScript PASS'
 
       - name: Compile active backend
@@ -131,7 +133,8 @@ jobs:
                       metadata = sample.get('model_metadata') or {}
                       assert 'statistical_deviation' in metadata
                       assert 'x2x' in metadata
-                      print('LIVE FEED PASS:', sample.get('symbol'), sample.get('displayed_price'), 'digit', sample.get('last_digit'), 'candidate', sample.get('candidate_prediction'), 'decision', sample.get('decision'))
+                      assert sample.get('price_source') == 'DERIV_OPTIONS'
+                      print('LIVE FEED PASS:', sample.get('symbol'), sample.get('displayed_price'), 'digit', sample.get('last_digit'), 'source', sample.get('price_source'), 'candidate', sample.get('candidate_prediction'), 'decision', sample.get('decision'))
                       raise SystemExit(0)
               except SystemExit:
                   raise
