@@ -9,9 +9,11 @@ from backend.core.premium_gate import PremiumGate
 
 
 class MultiMarketAI:
-    """V5 market analyzer with real weighted voting and candidate stability."""
+    """Market analyzer with evidence-weighted voting and safe bootstrap learning."""
 
-    MODELS = ("frequency", "markov", "sequence", "transition")
+    # Transition is intentionally excluded from voting because it duplicates
+    # first-order Markov. It remains available in model metadata for research.
+    MODELS = ("frequency", "markov", "sequence")
 
     def __init__(self, market_engine, model_memory):
         self.market_engine = market_engine
@@ -83,7 +85,20 @@ class MultiMarketAI:
         try:
             regime = MarketRegime(digits).analyse()
             adaptive_weights = self.model_memory.adaptive_weights(symbol=symbol)
-            pipeline = DSPFXAIPipeline(digits, weights=adaptive_weights)
+            earned_weight_total = sum(
+                max(0.0, float(adaptive_weights.get(model, 0.0) or 0.0))
+                for model in self.MODELS
+            )
+
+            # Bootstrap solves the zero-evidence deadlock: equal default voting
+            # is allowed only to generate shadow-learning candidates. Edge and
+            # production gates still see zero historical evidence, so these
+            # candidates cannot become production signals prematurely.
+            bootstrap_learning = earned_weight_total <= 0.0
+            pipeline = DSPFXAIPipeline(
+                digits,
+                weights=None if bootstrap_learning else adaptive_weights,
+            )
             result = pipeline.run()
 
             if not result:
@@ -106,7 +121,7 @@ class MultiMarketAI:
                     continue
 
                 stats = self.model_memory.statistics(model, symbol=symbol)
-                if stats.get("status") == "SUSPENDED":
+                if not bootstrap_learning and stats.get("status") == "SUSPENDED":
                     continue
 
                 active_predictions[model] = int(prediction)
@@ -141,6 +156,7 @@ class MultiMarketAI:
                 dict.fromkeys(
                     edge.get("blocking_reasons", [])
                     + premium.get("blocking_reasons", [])
+                    + (["Bootstrap shadow learning only"] if bootstrap_learning else [])
                 )
             )
 
@@ -155,7 +171,7 @@ class MultiMarketAI:
                 "edge_grade": edge["edge_grade"],
                 "edge_components": edge["components"],
                 "edge_reasons": edge["reasons"],
-                "premium": premium["is_premium"],
+                "premium": premium["is_premium"] and not bootstrap_learning,
                 "premium_status": premium["status"],
                 "blocking_reasons": blocking_reasons,
                 "regime": regime["regime"],
@@ -165,6 +181,8 @@ class MultiMarketAI:
                 "model_weights": active_weights.copy(),
                 "model_statistics": model_statistics,
                 "model_metadata": result.get("model_metadata", {}),
+                "bootstrap_learning": bootstrap_learning,
+                "active_models": len(active_predictions),
             }
 
         except Exception as error:
