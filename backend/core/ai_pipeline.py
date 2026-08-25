@@ -7,6 +7,7 @@ from backend.core.statistical_digit_engine import StatisticalDigitEngine
 from backend.core.x2x_research_engine import X2XResearchEngine
 from backend.core.probability_analysis import ProbabilityAnalysisEngine
 from backend.core.hot_1000_continuation import Hot1000ContinuationEngine
+from backend.core.cold_reversion import ColdReversionEngine
 
 
 class DSPFXAIPipeline:
@@ -23,6 +24,7 @@ class DSPFXAIPipeline:
     - X2X pattern detector
     - Cautious 0-9 probability analysis with uncertainty shrinkage
     - Exact 1000-tick hot-digit continuation hypothesis
+    - Cold-digit mean-reversion hypotheses over 200/500/1000 ticks
 
     Momentum remains disabled until an independent algorithm is implemented.
     """
@@ -45,6 +47,7 @@ class DSPFXAIPipeline:
         self.x2x = X2XResearchEngine(self.digits)
         self.probability_analysis = ProbabilityAnalysisEngine(self.digits)
         self.hot_1000 = Hot1000ContinuationEngine(self.digits)
+        self.cold_reversion = ColdReversionEngine(self.digits)
 
         for previous_digit, current_digit in zip(
             self.digits,
@@ -126,6 +129,7 @@ class DSPFXAIPipeline:
         x2x_report = self.x2x.analyse()
         probability_report = self.probability_analysis.analyse()
         hot_1000_report = self.hot_1000.analyse()
+        cold_reversion_report = self.cold_reversion.analyse()
 
         result["model_metadata"] = {
             "frequency": {
@@ -187,6 +191,7 @@ class DSPFXAIPipeline:
             "x2x": x2x_report,
             "probability_analysis": probability_report,
             "hot_1000_continuation": hot_1000_report,
+            "cold_reversion": cold_reversion_report,
         }
 
         return result
