@@ -1,10 +1,14 @@
 import asyncio
 import contextlib
+import csv
+import io
+import json
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.web_state import (
@@ -17,6 +21,7 @@ from backend.web_state import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+PREDICTION_DB = BASE_DIR / "data" / "multi_market_learning.db"
 
 try:
     from backend.core.all_volatility_web_runner import run_forever
@@ -87,6 +92,91 @@ async def opportunities():
 @app.get("/api/statistics")
 async def statistics():
     return get_statistics()
+
+
+@app.get("/api/predictions.csv")
+async def prediction_history_csv():
+    """Export the prospective prediction audit log as CSV.
+
+    This endpoint is read-only and deliberately exports the evidence recorded
+    before each next-tick outcome together with the resolved result. It does not
+    create, modify, or execute trades.
+    """
+    columns = [
+        "id",
+        "created_at",
+        "resolved_at",
+        "symbol",
+        "predicted",
+        "actual",
+        "result",
+        "selection_mode",
+        "confidence",
+        "calibrated_confidence",
+        "edge",
+        "edge_grade",
+        "regime",
+        "market_quality",
+        "source_epoch",
+        "source_quote",
+        "resolved_epoch",
+        "resolved_quote",
+        "rolling_accuracy",
+        "rolling_samples",
+        "rolling_lower_bound",
+        "rolling_upper_bound",
+        "statistically_above_baseline",
+        "model_predictions",
+        "model_weights",
+        "model_statistics",
+    ]
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+
+    if PREDICTION_DB.exists():
+        connection = sqlite3.connect(str(PREDICTION_DB), timeout=10)
+        connection.row_factory = sqlite3.Row
+        try:
+            available = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(predictions)"
+                ).fetchall()
+            }
+            selected = [column for column in columns if column in available]
+            if selected:
+                rows = connection.execute(
+                    f"SELECT {', '.join(selected)} FROM predictions ORDER BY id ASC"
+                ).fetchall()
+                for row in rows:
+                    payload = {column: row[column] for column in selected}
+                    # Normalise JSON text fields so malformed legacy rows do not
+                    # break spreadsheet imports while preserving the raw object.
+                    for name in (
+                        "model_predictions",
+                        "model_weights",
+                        "model_statistics",
+                    ):
+                        value = payload.get(name)
+                        if value is None:
+                            continue
+                        try:
+                            payload[name] = json.dumps(json.loads(value), sort_keys=True)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            payload[name] = str(value)
+                    writer.writerow(payload)
+        finally:
+            connection.close()
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=dsnpfx_prediction_history.csv"
+        },
+    )
 
 
 @app.websocket("/ws")
