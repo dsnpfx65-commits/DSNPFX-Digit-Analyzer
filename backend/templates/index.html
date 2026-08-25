@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="DSNPFX Market Insight AI — evidence-first Deriv digit market scanner">
   <title>DSNPFX Market Insight AI</title>
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=12">
-  <link rel="stylesheet" href="/static/css/evidence-watch.css?v=12">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=13">
+  <link rel="stylesheet" href="/static/css/evidence-watch.css?v=13">
 </head>
 <body>
   <div class="ambient ambient-a"></div>
@@ -30,12 +30,13 @@
         <p class="eyebrow">Live Market Scanner · V9 Research Layer</p>
         <h2>Verified digit opportunities only.</h2>
         <p class="intro-copy">
-          Every supported Volatility market is scanned continuously. The green scanner reveals a Match digit only after the production evidence gate approves it. V9 research candidates, N-gram support, statistical deviation, X2X telemetry and forward evidence are visible separately so candidate strength is never presented as a verified win probability.
+          Every supported Volatility market is scanned continuously from the Deriv Options / Digits tick feed. The green scanner reveals a Match digit only after the production evidence gate approves it. V9 research candidates, N-gram support, statistical deviation, X2X telemetry and forward evidence are visible separately so candidate strength is never presented as a verified win probability.
         </p>
       </div>
       <div class="system-summary">
         <div><span>Markets</span><strong id="onlineMarkets">0 / 0</strong></div>
         <div><span>Verified</span><strong id="verifiedSignals">0</strong></div>
+        <div><span>Source</span><strong>OPTIONS</strong></div>
         <div><span>Status</span><strong id="scannerStatus">STARTING</strong></div>
       </div>
     </section>
@@ -53,6 +54,7 @@
           <h2>Scanning in descending order</h2>
         </div>
         <div class="heading-meta">
+          <span class="research-badge">Deriv Options / Digits Feed</span>
           <span class="research-badge">Candidate ≠ Signal</span>
           <p id="lastUpdate" class="muted">Waiting for live ticks</p>
         </div>
@@ -176,9 +178,9 @@
           <span class="market-mode">SHADOW</span>
         </div>
         <div class="market-tick-row">
-          <div><span>Live Price</span><strong class="live-price">--</strong></div>
-          <div><span>Last Digit</span><strong class="last-digit">--</strong></div>
-          <div><span>Regime</span><strong class="market-regime">COLLECTING</strong></div>
+          <div><span>Digit Contract Tick</span><strong class="live-price">--</strong><small>Deriv Options</small></div>
+          <div><span>Last Digit</span><strong class="last-digit">--</strong><small>Settlement feed</small></div>
+          <div><span>Regime</span><strong class="market-regime">COLLECTING</strong><small>V9 analysis</small></div>
         </div>
       </div>
 
@@ -244,7 +246,7 @@
     </article>
   </template>
 
-  <script src="/static/js/dashboard.js?v=12"></script>
-  <script src="/static/js/evidence-watch.js?v=12"></script>
+  <script src="/static/js/dashboard.js?v=13"></script>
+  <script src="/static/js/evidence-watch.js?v=13"></script>
 </body>
 </html>
