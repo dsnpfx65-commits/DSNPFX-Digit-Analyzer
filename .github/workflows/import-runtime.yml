@@ -24,13 +24,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          parts=(.bootstrap/runtime-engine.b64.part*)
-          if [ ${#parts[@]} -ne 4 ]; then
-            echo "Expected 4 validated runtime-engine parts, found ${#parts[@]}."
-            exit 1
-          fi
-          cat "${parts[@]}" | base64 --decode > /tmp/DSNPFX-RUNTIME-ENGINE.tar.xz
+          required=(
+            .bootstrap/runtime-engine.b64.part00
+            .bootstrap/runtime-engine.b64.part01a
+            .bootstrap/runtime-engine.b64.part01b
+            .bootstrap/runtime-engine.b64.part01c
+            .bootstrap/runtime-engine.b64.part01d
+            .bootstrap/runtime-engine.b64.part02
+            .bootstrap/runtime-engine.b64.part03
+          )
+          for part in "${required[@]}"; do
+            test -f "$part" || { echo "Missing $part"; exit 1; }
+          done
+          cat "${required[@]}" | base64 --decode > /tmp/DSNPFX-RUNTIME-ENGINE.tar.xz
           echo "d4ed1e47080dda3f6a0d67d32b1cbc033b8b3c1b079271f150a235b70f54f7af  /tmp/DSNPFX-RUNTIME-ENGINE.tar.xz" | sha256sum -c -
           tar -xJf /tmp/DSNPFX-RUNTIME-ENGINE.tar.xz -C .
           rm -rf .bootstrap
