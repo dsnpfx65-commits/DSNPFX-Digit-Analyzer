@@ -17,18 +17,30 @@
     return `${number >= 0 ? "+" : ""}${number.toFixed(2)} pp`;
   };
 
-  function probabilityAnalysis(market) {
+  function modelMetadata(market) {
     const metadata = market?.model_metadata;
-    if (!metadata || typeof metadata !== "object") return {};
-    const analysis = metadata.probability_analysis;
+    return metadata && typeof metadata === "object" ? metadata : {};
+  }
+
+  function probabilityAnalysis(market) {
+    const analysis = modelMetadata(market).probability_analysis;
     return analysis && typeof analysis === "object" ? analysis : {};
   }
 
   function hot1000Analysis(market) {
-    const metadata = market?.model_metadata;
-    if (!metadata || typeof metadata !== "object") return {};
-    const analysis = metadata.hot_1000_continuation;
+    const analysis = modelMetadata(market).hot_1000_continuation;
     return analysis && typeof analysis === "object" ? analysis : {};
+  }
+
+  function coldReversionAnalysis(market) {
+    const analysis = modelMetadata(market).cold_reversion;
+    return analysis && typeof analysis === "object" ? analysis : {};
+  }
+
+  function coldWindow(analysis, window) {
+    const windows = analysis?.windows;
+    if (!windows || typeof windows !== "object") return {};
+    return windows[window] || windows[String(window)] || {};
   }
 
   function edgeStatus(analysis) {
@@ -104,11 +116,8 @@
     `;
 
     const blocker = details.querySelector(".gate-blocker");
-    if (blocker) {
-      details.insertBefore(panel, blocker);
-    } else {
-      details.appendChild(panel);
-    }
+    if (blocker) details.insertBefore(panel, blocker);
+    else details.appendChild(panel);
     return panel;
   }
 
@@ -124,13 +133,9 @@
 
     const statusNode = panel.querySelector(".hot1000-status");
     if (statusNode) {
-      if (status === "COLLECTING") {
-        statusNode.textContent = `COLLECTING ${samples}/${required}`;
-      } else if (status === "TIED_HOT_DIGITS") {
-        statusNode.textContent = "TIED · WAIT";
-      } else {
-        statusNode.textContent = "READY · FORWARD TEST";
-      }
+      if (status === "COLLECTING") statusNode.textContent = `COLLECTING ${samples}/${required}`;
+      else if (status === "TIED_HOT_DIGITS") statusNode.textContent = "TIED · WAIT";
+      else statusNode.textContent = "READY · FORWARD TEST";
     }
 
     const digit = panel.querySelector(".hot1000-digit");
@@ -154,7 +159,91 @@
         ? "Hot digit is a research candidate only. Forward next-tick results must beat the live Match break-even rate before promotion."
         : status === "TIED_HOT_DIGITS"
           ? "The 1000-tick window has multiple equally hot digits, so this strategy produces no candidate."
-          : `Collecting the exact 1000-tick sample required by the video strategy: ${samples}/${required}.`;
+          : `Collecting the exact 1000-tick sample required by the continuation hypothesis: ${samples}/${required}.`;
+    }
+  }
+
+  function ensureColdPanel(card) {
+    if (!card) return null;
+    const details = card.querySelector(".v9-details");
+    if (!details) return null;
+
+    let panel = details.querySelector(".cold-reversion-research-panel");
+    if (panel) return panel;
+
+    panel = document.createElement("section");
+    panel.className = "cold-reversion-research-panel";
+    panel.innerHTML = `
+      <div class="model-votes">
+        <span>COLD REVERSION · RESEARCH ONLY</span>
+        <strong class="cold-status">COLLECTING</strong>
+      </div>
+      <div class="v9-grid cold-reversion-grid">
+        <div><span>Cold 200</span><strong class="cold-200">--</strong></div>
+        <div><span>Cold 500</span><strong class="cold-500">--</strong></div>
+        <div><span>Cold 1000</span><strong class="cold-1000">--</strong></div>
+        <div><span>Primary Window</span><strong class="cold-primary-window">--</strong></div>
+        <div><span>Primary Digit</span><strong class="cold-primary-digit">--</strong></div>
+        <div><span>Duration</span><strong>1 tick</strong></div>
+      </div>
+      <div class="gate-blocker">
+        <span>Cold Reversion Rule</span>
+        <strong class="cold-note">A rare digit is not automatically due. Each window is forward-tested independently.</strong>
+      </div>
+    `;
+
+    const hotPanel = details.querySelector(".hot1000-research-panel");
+    if (hotPanel?.nextSibling) details.insertBefore(panel, hotPanel.nextSibling);
+    else details.appendChild(panel);
+    return panel;
+  }
+
+  function coldCandidateText(report) {
+    const status = String(report?.status || "COLLECTING").toUpperCase();
+    if (status === "COLLECTING") {
+      return `COLLECTING ${Number(report?.samples || 0)}/${Number(report?.samples_required || 0)}`;
+    }
+    if (status === "TIED_COLD_DIGITS") return "TIED · WAIT";
+    if (report?.candidate === null || report?.candidate === undefined) return "--";
+    return `MATCH ${report.candidate} · ${fmtPctOrDash(report.frequency_pct)} · ${fmtEdgeOrDash(report.deviation_vs_10pct_pp)}`;
+  }
+
+  function updateColdReversion(card, market) {
+    if (!card) return;
+    const panel = ensureColdPanel(card);
+    if (!panel) return;
+
+    const analysis = coldReversionAnalysis(market);
+    const report200 = coldWindow(analysis, 200);
+    const report500 = coldWindow(analysis, 500);
+    const report1000 = coldWindow(analysis, 1000);
+
+    const status = panel.querySelector(".cold-status");
+    const cold200 = panel.querySelector(".cold-200");
+    const cold500 = panel.querySelector(".cold-500");
+    const cold1000 = panel.querySelector(".cold-1000");
+    const primaryWindow = panel.querySelector(".cold-primary-window");
+    const primaryDigit = panel.querySelector(".cold-primary-digit");
+    const note = panel.querySelector(".cold-note");
+
+    if (status) status.textContent = String(analysis?.status || "COLLECTING").toUpperCase();
+    if (cold200) cold200.textContent = coldCandidateText(report200);
+    if (cold500) cold500.textContent = coldCandidateText(report500);
+    if (cold1000) cold1000.textContent = coldCandidateText(report1000);
+    if (primaryWindow) primaryWindow.textContent = analysis?.primary_window ?? "--";
+    if (primaryDigit) primaryDigit.textContent = analysis?.primary_candidate ?? "--";
+
+    if (note) {
+      const hot = hot1000Analysis(market);
+      const coldDigit = analysis?.primary_candidate;
+      const hotDigit = hot?.candidate;
+      if (coldDigit !== null && coldDigit !== undefined && hotDigit !== null && hotDigit !== undefined) {
+        note.textContent = Number(coldDigit) === Number(hotDigit)
+          ? `HOT and COLD currently point to digit ${coldDigit}, but for opposite reasons. Forward evidence decides whether either hypothesis has edge.`
+          : `Current comparison: HOT ${hotDigit} vs COLD ${coldDigit}. Both remain research-only until prospective results beat break-even.`;
+      } else {
+        note.textContent = "A rare digit is not automatically due. Cold 200/500/1000 are forward-tested independently against HOT 1000 and the live Match break-even rate.";
+      }
     }
   }
 
@@ -165,8 +254,13 @@
       const card = typeof cards !== "undefined" ? cards.get(symbol) : null;
       updateProposalEdge(card, market);
       updateHot1000(card, market);
+      updateColdReversion(card, market);
     };
   }
 
-  window.DSNPFXProposalEdgeUI = { updateProposalEdge, updateHot1000 };
+  window.DSNPFXProposalEdgeUI = {
+    updateProposalEdge,
+    updateHot1000,
+    updateColdReversion,
+  };
 })();
