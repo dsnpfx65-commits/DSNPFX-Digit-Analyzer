@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="DSNPFX Market Insight AI — evidence-first Deriv digit market scanner">
   <title>DSNPFX Market Insight AI</title>
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=10">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=11">
 </head>
 <body>
   <div class="ambient ambient-a"></div>
   <div class="ambient ambient-b"></div>
+
   <header class="topbar">
     <div class="brand-lockup">
       <div class="brand-mark">D</div>
@@ -21,35 +22,50 @@
     </div>
     <div id="connection" class="connection"><span></span>CONNECTING</div>
   </header>
+
   <main class="app-shell">
     <section class="intro-card">
       <div>
-        <p class="eyebrow">Live Market Scanner</p>
+        <p class="eyebrow">Live Market Scanner · V9 Research Layer</p>
         <h2>Verified digit opportunities only.</h2>
-        <p class="intro-copy">Every supported Volatility market is scanned continuously. The interface reveals a Match digit only when the production evidence gate approves it. New markets first build trusted outcome samples, so WAIT / NO EDGE is expected during learning.</p>
+        <p class="intro-copy">
+          Every supported Volatility market is scanned continuously. The green scanner reveals a Match digit only after the production evidence gate approves it. V9 research candidates, N-gram support, statistical deviation, X2X telemetry and forward evidence are visible separately so candidate strength is never presented as a verified win probability.
+        </p>
       </div>
       <div class="system-summary">
-        <div><span>Markets</span><strong id="onlineMarkets">0 / 10</strong></div>
+        <div><span>Markets</span><strong id="onlineMarkets">0 / 0</strong></div>
         <div><span>Verified</span><strong id="verifiedSignals">0</strong></div>
         <div><span>Status</span><strong id="scannerStatus">STARTING</strong></div>
       </div>
     </section>
+
     <nav class="tabbar" aria-label="DSNPFX dashboard sections">
       <button class="tab-button active" data-tab="insight" type="button">Market Insight</button>
       <button class="tab-button" data-tab="setup" type="button">Bot Setup</button>
       <button class="tab-button" data-tab="evidence" type="button">Evidence</button>
     </nav>
+
     <section id="tab-insight" class="tab-panel active">
       <div class="section-heading">
-        <div><p class="eyebrow">All Volatility Markets</p><h2>Scanning in descending order</h2></div>
-        <p id="lastUpdate" class="muted">Waiting for live ticks</p>
+        <div>
+          <p class="eyebrow">All Volatility Markets</p>
+          <h2>Scanning in descending order</h2>
+        </div>
+        <div class="heading-meta">
+          <span class="research-badge">Candidate ≠ Signal</span>
+          <p id="lastUpdate" class="muted">Waiting for live ticks</p>
+        </div>
       </div>
       <div id="marketStack" class="market-stack" aria-live="polite"></div>
     </section>
+
     <section id="tab-setup" class="tab-panel">
       <div class="setup-grid">
         <article class="panel bot-panel">
-          <div class="panel-heading"><div><p class="eyebrow">Execution Layer</p><h2>Bot Setup</h2></div><span class="safe-badge">CONTROL UI ONLY</span></div>
+          <div class="panel-heading">
+            <div><p class="eyebrow">Execution Layer</p><h2>Bot Setup</h2></div>
+            <span class="safe-badge">CONTROL UI ONLY</span>
+          </div>
           <div class="form-grid">
             <label>Market<select id="botMarket"></select></label>
             <label>Trade Type<select><option>Digits</option></select></label>
@@ -71,6 +87,7 @@
           </div>
           <p id="botMessage" class="bot-message">Live execution is intentionally disabled in this redesign build. A verified prediction can populate the setup panel, but no order is sent.</p>
         </article>
+
         <article class="panel selection-panel">
           <p class="eyebrow">Verified Feed</p><h2>Selected Opportunity</h2>
           <div class="selected-orb"><span>Prediction</span><strong id="selectedPrediction">--</strong></div>
@@ -83,9 +100,12 @@
         </article>
       </div>
     </section>
+
     <section id="tab-evidence" class="tab-panel">
       <article class="panel evidence-panel">
-        <div class="panel-heading"><div><p class="eyebrow">Production Evidence</p><h2>Trusted Performance</h2></div></div>
+        <div class="panel-heading">
+          <div><p class="eyebrow">Production Evidence</p><h2>Trusted Performance</h2></div>
+        </div>
         <div class="evidence-grid">
           <div><span>Wins</span><strong id="productionWins">0</strong></div>
           <div><span>Losses</span><strong id="productionLosses">0</strong></div>
@@ -94,15 +114,21 @@
           <div><span>Resolved</span><strong id="resolvedSignals">0</strong></div>
           <div><span>Pending</span><strong id="pendingSignals">0</strong></div>
         </div>
-        <p class="evidence-note">The production gate requires trusted market-specific outcomes before a digit can be published. Its current minimum is 100 resolved samples, plus quality, edge, raw-confidence and model-agreement checks. Shadow, legacy and research outcomes are excluded from trusted production accuracy.</p>
+        <p class="evidence-note">
+          The production gate requires trusted market-specific outcomes before a digit can be published. Current qualification requires a complete evidence window plus market quality, statistical evidence above the 10% exact-digit baseline, edge, raw-vote and independent-agreement checks. Research diagnostics never become verified confidence merely because their internal score is high.
+        </p>
       </article>
     </section>
   </main>
+
   <template id="marketCardTemplate">
     <article class="market-card waiting">
       <div class="market-copy">
         <div class="market-title-row">
-          <div><p class="market-kicker">Volatility Market</p><h3 class="market-name">Volatility 100 (1s)</h3></div>
+          <div>
+            <p class="market-kicker">Volatility Market</p>
+            <h3 class="market-name">Volatility Market</h3>
+          </div>
           <span class="market-mode">SHADOW</span>
         </div>
         <div class="market-tick-row">
@@ -111,23 +137,69 @@
           <div><span>Regime</span><strong class="market-regime">COLLECTING</strong></div>
         </div>
       </div>
+
       <div class="scanner-column">
-        <div class="scanner-orb" aria-label="Prediction scanner"><div class="scanner-rings"></div><div class="scanner-sweep"></div><div class="scanner-core"><span class="scanner-label">SCANNING</span><strong class="scanner-digit">--</strong></div></div>
+        <div class="scanner-orb" aria-label="Verified prediction scanner">
+          <div class="scanner-rings"></div>
+          <div class="scanner-sweep"></div>
+          <div class="scanner-core">
+            <span class="scanner-label">SCANNING</span>
+            <strong class="scanner-digit">--</strong>
+          </div>
+        </div>
         <strong class="match-status">Analyzing</strong>
         <small class="scanner-note">Checking production evidence</small>
       </div>
+
       <div class="market-evidence">
-        <div class="decision-pill">WAIT</div>
+        <div class="decision-row">
+          <div class="decision-pill">WAIT</div>
+          <span class="eligibility-label">SHADOW ONLY</span>
+        </div>
+
+        <div class="candidate-strip">
+          <div>
+            <span>V9 Research Candidate</span>
+            <strong class="candidate-digit">--</strong>
+          </div>
+          <div class="readiness-copy">
+            <span class="readiness-label">Evidence Readiness</span>
+            <strong class="readiness-value">0%</strong>
+          </div>
+        </div>
+        <div class="readiness-track"><span class="readiness-bar"></span></div>
+        <p class="candidate-warning">Research candidate only — not a trade signal.</p>
+
         <div class="mini-metrics">
           <div><span>Verified Confidence</span><strong class="verified-confidence">--</strong></div>
+          <div><span>Actual Accuracy</span><strong class="actual-accuracy">--</strong></div>
+          <div><span>Trusted Samples</span><strong class="trusted-samples">0 / 100</strong></div>
+          <div><span>Independent Agreement</span><strong class="model-agreement">0 / 0</strong></div>
           <div><span>Edge Score</span><strong class="edge-score">0.00</strong></div>
-          <div><span>Model Agreement</span><strong class="model-agreement">0 / 0</strong></div>
           <div><span>Quality</span><strong class="market-quality">LEARNING</strong></div>
         </div>
+
+        <details class="v9-details">
+          <summary>V9 Intelligence</summary>
+          <div class="v9-grid">
+            <div><span>Raw Vote</span><strong class="raw-vote">--</strong></div>
+            <div><span>Candidate Stability</span><strong class="candidate-stability">--</strong></div>
+            <div><span>N-gram Pattern</span><strong class="ngram-pattern">--</strong></div>
+            <div><span>N-gram Support</span><strong class="ngram-support">0</strong></div>
+            <div><span>Max |Z|</span><strong class="z-score">--</strong></div>
+            <div><span>Entropy</span><strong class="entropy-score">--</strong></div>
+            <div><span>X2X</span><strong class="x2x-status">INACTIVE</strong></div>
+            <div><span>X2X Research</span><strong class="x2x-candidate">--</strong></div>
+          </div>
+          <div class="model-votes"><span>Voting Models</span><strong class="model-vote-list">No active model votes</strong></div>
+          <div class="gate-blocker"><span>Primary Blocker</span><strong class="primary-blocker">Collecting evidence</strong></div>
+        </details>
+
         <button class="use-signal" type="button" disabled>Use Verified Signal</button>
       </div>
     </article>
   </template>
-  <script src="/static/js/dashboard.js?v=10"></script>
+
+  <script src="/static/js/dashboard.js?v=11"></script>
 </body>
 </html>
