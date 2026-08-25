@@ -23,14 +23,14 @@ import websockets
 from backend.core.market_discovery import MarketDiscovery
 from backend.core import volatility_web_runner as base
 from backend.core.multi_market_runner import WS_URL
-from backend.core.proposal_quote_service import get_cached_match_quote
+from backend.core.proposal_quote_service import (
+    get_cached_match_quote,
+    get_cached_differ_quote,
+)
 from backend.core.v9_shadow_collector import install as install_v9_shadow_collector
 from backend.web_state import publish_state
 
 
-# Current Deriv fixed-Volatility naming families. A symbol is NOT accepted just
-# because it appears here: _probe_tick_candidates requires the live Deriv API
-# to return a real Options tick before we add it to the scanner.
 VOLATILITY_CANDIDATES = {
     "R_5": "Volatility 5",
     "1HZ5V": "Volatility 5 (1s)",
@@ -75,13 +75,14 @@ def _named_market_payload(result, latest_ticks):
     payload["price_source"] = "DERIV_OPTIONS"
     payload["price_source_label"] = "Deriv Options / Digits"
 
-    metadata = payload.get("model_metadata") or {}
+    metadata = dict(payload.get("model_metadata") or {})
+
     probability = dict(metadata.get("probability_analysis") or {})
     best_digit = probability.get("best_match_digit")
-    quote = get_cached_match_quote(symbol, best_digit)
+    match_quote = get_cached_match_quote(symbol, best_digit)
 
-    if quote is not None:
-        break_even = _number(quote.get("break_even_probability_pct"))
+    if match_quote is not None:
+        break_even = _number(match_quote.get("break_even_probability_pct"))
         estimate = _number(probability.get("best_match_estimate_pct"))
         payout_edge = None
         if break_even is not None and estimate is not None:
@@ -89,17 +90,17 @@ def _named_market_payload(result, latest_ticks):
 
         probability["break_even_probability_pct"] = break_even
         probability["estimated_edge_vs_break_even_pp"] = payout_edge
-        probability["proposal_quote_status"] = quote.get("status")
-        probability["proposal_ask_price"] = quote.get("ask_price")
-        probability["proposal_payout"] = quote.get("payout")
-        probability["proposal_currency"] = quote.get("currency")
-        probability["proposal_updated_at"] = quote.get("updated_at")
+        probability["proposal_quote_status"] = match_quote.get("status")
+        probability["proposal_ask_price"] = match_quote.get("ask_price")
+        probability["proposal_payout"] = match_quote.get("payout")
+        probability["proposal_currency"] = match_quote.get("currency")
+        probability["proposal_updated_at"] = match_quote.get("updated_at")
 
         if (
             probability.get("research_action") == "WATCH"
             and payout_edge is not None
             and payout_edge >= 1.0
-            and quote.get("status") == "LIVE"
+            and match_quote.get("status") == "LIVE"
         ):
             probability["payout_action"] = "WATCH"
         else:
@@ -108,10 +109,33 @@ def _named_market_payload(result, latest_ticks):
         probability["proposal_quote_status"] = "WAITING"
         probability["payout_action"] = "NO_TRADE"
 
-    metadata = dict(metadata)
+    cold20 = dict(metadata.get("cold_20_differs") or {})
+    cold20_digit = cold20.get("candidate")
+    differ_quote = get_cached_differ_quote(symbol, cold20_digit)
+
+    if differ_quote is not None:
+        differ_break_even = _number(differ_quote.get("break_even_probability_pct"))
+        baseline_edge = None
+        if differ_break_even is not None:
+            baseline_edge = round(90.0 - differ_break_even, 4)
+
+        cold20["proposal_quote_status"] = differ_quote.get("status")
+        cold20["break_even_probability_pct"] = differ_break_even
+        cold20["baseline_edge_vs_break_even_pp"] = baseline_edge
+        cold20["proposal_ask_price"] = differ_quote.get("ask_price")
+        cold20["proposal_payout"] = differ_quote.get("payout")
+        cold20["proposal_currency"] = differ_quote.get("currency")
+        cold20["proposal_updated_at"] = differ_quote.get("updated_at")
+        cold20["payout_action"] = "FORWARD_TEST_ONLY"
+    else:
+        cold20["proposal_quote_status"] = "WAITING"
+        cold20["payout_action"] = "FORWARD_TEST_ONLY"
+
     metadata["probability_analysis"] = probability
+    metadata["cold_20_differs"] = cold20
     payload["model_metadata"] = metadata
-    payload["proposal_quote"] = quote
+    payload["proposal_quote"] = match_quote
+    payload["differ_proposal_quote"] = differ_quote
 
     return payload
 
