@@ -19,6 +19,14 @@ const FALLBACK_NAMES = {
   "R_10": "Volatility 10",
 };
 
+const PRODUCTION_THRESHOLDS = {
+  samples: 100,
+  rollingAccuracy: 15,
+  edge: 70,
+  rawConfidence: 66,
+  agreeingModels: 2,
+};
+
 const cards = new Map();
 let latestMarkets = {};
 let currentOrder = [];
@@ -62,14 +70,16 @@ function marketSort(a, b) {
   return marketName(a, aMarket).localeCompare(marketName(b, bMarket));
 }
 
-function formatAgreement(value) {
-  if (!value) return "0 / 0";
-  if (typeof value === "object") {
-    const agreeing = Number(value.agreeing_models || 0);
-    const active = Number(value.active_models || 0);
-    return `${agreeing} / ${active}`;
+function agreementObject(value) {
+  if (!value || typeof value !== "object") {
+    return { agreeing_models: 0, active_models: 0, agreeing_model_names: [] };
   }
-  return safeText(value);
+  return value;
+}
+
+function formatAgreement(value) {
+  const agreement = agreementObject(value);
+  return `${Number(agreement.agreeing_models || 0)} / ${Number(agreement.active_models || 0)}`;
 }
 
 function trustedConfidence(market) {
@@ -77,11 +87,18 @@ function trustedConfidence(market) {
   return samples > 0 ? fmtPct(market?.calibrated_confidence) : "--";
 }
 
+function actualAccuracy(market) {
+  const samples = Number(market?.rolling_samples || 0);
+  return samples > 0 ? fmtPct(market?.rolling_accuracy) : "--";
+}
+
 function evidenceNote(market, verified) {
   if (verified) return `Verified confidence ${fmtPct(market?.calibrated_confidence)}`;
 
   const samples = Number(market?.rolling_samples || 0);
-  if (samples < 100) return `Learning trusted evidence ${samples}/100`;
+  if (samples < PRODUCTION_THRESHOLDS.samples) {
+    return `Learning trusted evidence ${samples}/${PRODUCTION_THRESHOLDS.samples}`;
+  }
 
   const reasons = Array.isArray(market?.blocking_reasons)
     ? market.blocking_reasons.filter(Boolean)
@@ -96,9 +113,88 @@ function scannerSignature(market, verified) {
     prediction: market?.published_prediction ?? null,
     decision: market?.decision || "WAIT",
     quality: market?.market_quality || "LEARNING",
-    rollingSamples: Number(market?.rolling_samples || 0),
     rawPremium: Boolean(market?.raw_premium),
   });
+}
+
+function modelMetadata(market) {
+  return market?.model_metadata && typeof market.model_metadata === "object"
+    ? market.model_metadata
+    : {};
+}
+
+function formatPattern(pattern) {
+  if (!Array.isArray(pattern) || pattern.length === 0) return "--";
+  return pattern.join("→");
+}
+
+function formatModelVotes(predictions) {
+  if (!predictions || typeof predictions !== "object") return "No active model votes";
+
+  const labels = {
+    frequency: "Frequency",
+    markov: "Markov",
+    sequence: "N-gram",
+  };
+
+  const votes = Object.entries(predictions)
+    .filter(([model, prediction]) => labels[model] && prediction !== null && prediction !== undefined)
+    .map(([model, prediction]) => `${labels[model]} ${prediction}`);
+
+  return votes.length ? votes.join(" · ") : "No active model votes";
+}
+
+function qualificationReadiness(market, verified) {
+  if (verified) return 100;
+
+  const agreement = agreementObject(market?.model_agreement);
+  const tests = [
+    market?.candidate_prediction !== null && market?.candidate_prediction !== undefined,
+    market?.market_quality === "TEN_DIGIT",
+    Number(market?.rolling_samples || 0) >= PRODUCTION_THRESHOLDS.samples,
+    Number(market?.rolling_accuracy || 0) >= PRODUCTION_THRESHOLDS.rollingAccuracy,
+    Number(market?.edge_score || 0) >= PRODUCTION_THRESHOLDS.edge,
+    Number(market?.raw_confidence ?? market?.confidence ?? 0) >= PRODUCTION_THRESHOLDS.rawConfidence,
+    Number(agreement.agreeing_models || 0) >= PRODUCTION_THRESHOLDS.agreeingModels,
+    market?.statistically_above_baseline === true,
+    market?.recent_deterioration !== true,
+  ];
+
+  const passed = tests.filter(Boolean).length;
+  return Math.round((passed / tests.length) * 100);
+}
+
+function primaryBlocker(market, verified) {
+  if (verified) return "All production gates passed";
+
+  const samples = Number(market?.rolling_samples || 0);
+  if (samples < PRODUCTION_THRESHOLDS.samples) {
+    return `Building trusted forward evidence: ${samples}/${PRODUCTION_THRESHOLDS.samples}`;
+  }
+
+  const reasons = Array.isArray(market?.blocking_reasons)
+    ? market.blocking_reasons.filter(Boolean)
+    : [];
+
+  return reasons[0] || "Waiting for independent statistical edge";
+}
+
+function x2xDisplay(report) {
+  if (!report || report.active !== true) {
+    return { status: "INACTIVE", candidate: "--" };
+  }
+
+  const pattern = formatPattern(report.pattern);
+  let candidate = "ACTIVE · no prior follow-up";
+
+  if (report.candidate !== null && report.candidate !== undefined) {
+    candidate = `${report.candidate} · ${Number(report.candidate_support || 0)}/${Number(report.occurrences || 0)} · ${fmtPct(report.candidate_confidence)}`;
+  }
+
+  return {
+    status: `ACTIVE ${pattern}`,
+    candidate,
+  };
 }
 
 function createMarketCard(symbol, market = {}) {
@@ -158,13 +254,27 @@ function syncMarketCards(markets) {
 
 function updateScanner(card, market, verified) {
   const signature = scannerSignature(market, verified);
-  if (card._scannerSignature === signature) return;
+  const status = card.querySelector(".match-status");
+  const note = card.querySelector(".scanner-note");
+
+  if (card._scannerSignature === signature) {
+    if (card.classList.contains("revealed")) {
+      if (verified) {
+        note.textContent = evidenceNote(market, true);
+      } else {
+        status.textContent = Number(market?.rolling_samples || 0) < PRODUCTION_THRESHOLDS.samples
+          ? "Learning"
+          : "No Verified Match";
+        note.textContent = evidenceNote(market, false);
+      }
+    }
+    return;
+  }
+
   card._scannerSignature = signature;
 
   const digit = card.querySelector(".scanner-digit");
   const label = card.querySelector(".scanner-label");
-  const status = card.querySelector(".match-status");
-  const note = card.querySelector(".scanner-note");
 
   clearTimeout(card._revealTimer);
   card.classList.remove("revealed");
@@ -189,7 +299,9 @@ function updateScanner(card, market, verified) {
 
     digit.textContent = "--";
     label.textContent = "WAIT";
-    status.textContent = Number(market?.rolling_samples || 0) < 100 ? "Learning" : "No Verified Match";
+    status.textContent = Number(market?.rolling_samples || 0) < PRODUCTION_THRESHOLDS.samples
+      ? "Learning"
+      : "No Verified Match";
     note.textContent = evidenceNote(market, false);
   }, delay);
 }
@@ -202,6 +314,15 @@ function updateMarket(symbol, market) {
     && market.published_prediction !== undefined
   );
 
+  const metadata = modelMetadata(market);
+  const sequence = metadata.sequence || {};
+  const statistics = metadata.statistical_deviation || {};
+  const x2x = x2xDisplay(metadata.x2x || {});
+  const readiness = qualificationReadiness(market, verified);
+  const productionEligible = market?.production_eligible === true;
+  const rollingSamples = Number(market?.rolling_samples || 0);
+  const rawVote = market?.raw_confidence ?? market?.confidence;
+
   card.classList.toggle("signal", verified);
   card.querySelector(".market-name").textContent = marketName(symbol, market);
   card.querySelector(".market-mode").textContent = market.mode || "SHADOW";
@@ -209,12 +330,51 @@ function updateMarket(symbol, market) {
   card.querySelector(".live-price").textContent = safeText(market?.displayed_price ?? market?.price);
   card.querySelector(".last-digit").textContent = safeText(market?.last_digit);
   card.querySelector(".market-regime").textContent = safeText(market?.regime || "COLLECTING");
+
+  card.querySelector(".decision-pill").textContent = verified
+    ? "MATCH SIGNAL"
+    : safeText(market?.decision || "WAIT");
+  card.querySelector(".eligibility-label").textContent = productionEligible
+    ? "PRODUCTION ELIGIBLE"
+    : "SHADOW ONLY";
+
+  card.querySelector(".candidate-digit").textContent = safeText(market?.candidate_prediction);
+  card.querySelector(".readiness-label").textContent = productionEligible
+    ? "Production Readiness"
+    : "Research Readiness";
+  card.querySelector(".readiness-value").textContent = `${readiness}%`;
+  card.querySelector(".readiness-bar").style.width = `${readiness}%`;
+
   card.querySelector(".verified-confidence").textContent = trustedConfidence(market);
-  card.querySelector(".edge-score").textContent = fmtNum(market?.edge_score);
+  card.querySelector(".actual-accuracy").textContent = actualAccuracy(market);
+  card.querySelector(".trusted-samples").textContent = `${rollingSamples} / ${PRODUCTION_THRESHOLDS.samples}`;
   card.querySelector(".model-agreement").textContent = formatAgreement(market?.model_agreement);
+  card.querySelector(".edge-score").textContent = fmtNum(market?.edge_score);
   card.querySelector(".market-quality").textContent = safeText(market?.market_quality || "LEARNING");
-  card.querySelector(".decision-pill").textContent = verified ? "MATCH SIGNAL" : safeText(market?.decision || "WAIT");
-  card.querySelector(".use-signal").disabled = !verified;
+
+  card.querySelector(".raw-vote").textContent = rawVote === null || rawVote === undefined
+    ? "--"
+    : fmtPct(rawVote);
+  card.querySelector(".candidate-stability").textContent = market?.stability_score === null || market?.stability_score === undefined
+    ? "--"
+    : fmtPct(market.stability_score);
+  card.querySelector(".ngram-pattern").textContent = formatPattern(sequence.pattern);
+  card.querySelector(".ngram-support").textContent = sequence.support
+    ? `${sequence.support} (min ${sequence.minimum_support || 3})`
+    : `0 (min ${sequence.minimum_support || 3})`;
+  card.querySelector(".z-score").textContent = statistics.max_abs_z === null || statistics.max_abs_z === undefined
+    ? "--"
+    : Number(statistics.max_abs_z).toFixed(2);
+  card.querySelector(".entropy-score").textContent = statistics.entropy_normalised === null || statistics.entropy_normalised === undefined
+    ? "--"
+    : `${Number(statistics.entropy_normalised).toFixed(2)}%`;
+  card.querySelector(".x2x-status").textContent = x2x.status;
+  card.querySelector(".x2x-candidate").textContent = x2x.candidate;
+  card.querySelector(".model-vote-list").textContent = formatModelVotes(market?.model_predictions);
+  card.querySelector(".primary-blocker").textContent = primaryBlocker(market, verified);
+
+  const useSignal = card.querySelector(".use-signal");
+  useSignal.disabled = !verified;
 
   updateScanner(card, market, verified);
 }
@@ -234,17 +394,22 @@ function selectSignal(symbol) {
 }
 
 function updateStats(stats = {}) {
-  const pick = (...keys) => {
-    for (const key of keys) if (stats[key] !== undefined) return stats[key];
-    return 0;
-  };
+  const production = stats.production || {};
+  const productionRolling = stats.production_rolling || {};
 
-  document.getElementById("productionWins").textContent = pick("production_wins", "wins");
-  document.getElementById("productionLosses").textContent = pick("production_losses", "losses");
-  document.getElementById("productionAccuracy").textContent = fmtPct(pick("production_accuracy", "accuracy"));
-  document.getElementById("recentAccuracy").textContent = fmtPct(pick("recent_accuracy", "last20_accuracy"));
-  document.getElementById("resolvedSignals").textContent = pick("resolved_signals", "production_resolved", "resolved");
-  document.getElementById("pendingSignals").textContent = pick("pending_signals", "pending");
+  const wins = production.wins ?? stats.production_wins ?? stats.wins ?? 0;
+  const losses = production.losses ?? stats.production_losses ?? stats.losses ?? 0;
+  const accuracy = production.accuracy ?? stats.production_accuracy ?? stats.accuracy ?? 0;
+  const recentAccuracy = productionRolling.accuracy ?? stats.recent_accuracy ?? stats.last20_accuracy ?? 0;
+  const resolved = production.resolved ?? stats.production_resolved ?? stats.resolved_signals ?? stats.resolved ?? 0;
+  const pending = stats.pending ?? stats.pending_signals ?? 0;
+
+  document.getElementById("productionWins").textContent = wins;
+  document.getElementById("productionLosses").textContent = losses;
+  document.getElementById("productionAccuracy").textContent = fmtPct(accuracy);
+  document.getElementById("recentAccuracy").textContent = fmtPct(recentAccuracy);
+  document.getElementById("resolvedSignals").textContent = resolved;
+  document.getElementById("pendingSignals").textContent = pending;
 }
 
 function applyPayload(payload = {}) {
@@ -256,6 +421,7 @@ function applyPayload(payload = {}) {
     const status = latestMarkets[symbol]?.status;
     return status === "live" || status === "LIVE";
   }).length;
+
   const verified = currentOrder.filter((symbol) => latestMarkets[symbol]?.is_premium).length;
 
   document.getElementById("onlineMarkets").textContent = `${live} / ${currentOrder.length}`;
@@ -271,7 +437,11 @@ async function initialLoad() {
     if (!response.ok) return;
 
     const state = await response.json();
-    const [marketsRes, statsRes] = await Promise.all([fetch("/api/markets"), fetch("/api/statistics")]);
+    const [marketsRes, statsRes] = await Promise.all([
+      fetch("/api/markets"),
+      fetch("/api/statistics"),
+    ]);
+
     const marketsData = marketsRes.ok ? await marketsRes.json() : {};
     const statsData = statsRes.ok ? await statsRes.json() : {};
 
@@ -294,23 +464,33 @@ function connectWebSocket() {
     badge.classList.add("online");
     badge.innerHTML = "<span></span>LIVE";
   });
+
   socket.addEventListener("message", (event) => {
-    try { applyPayload(JSON.parse(event.data)); }
-    catch (error) { console.warn("Invalid websocket payload", error); }
+    try {
+      applyPayload(JSON.parse(event.data));
+    } catch (error) {
+      console.warn("Invalid websocket payload", error);
+    }
   });
+
   socket.addEventListener("close", () => {
     badge.classList.remove("online");
     badge.innerHTML = "<span></span>RECONNECTING";
     setTimeout(connectWebSocket, 2500);
   });
+
   socket.addEventListener("error", () => socket.close());
 }
 
 function setupTabs() {
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => {
-      document.querySelectorAll(".tab-button").forEach((item) => item.classList.toggle("active", item === button));
-      document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${button.dataset.tab}`));
+      document.querySelectorAll(".tab-button").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+      document.querySelectorAll(".tab-panel").forEach((panel) => {
+        panel.classList.toggle("active", panel.id === `tab-${button.dataset.tab}`);
+      });
     });
   });
 }
@@ -326,6 +506,7 @@ function setupStrategy() {
       multiplier: document.getElementById("multiplier").value,
       maxLosses: document.getElementById("maxLosses").value,
     };
+
     localStorage.setItem("dsnpfx-bot-strategy", JSON.stringify(strategy));
     document.getElementById("botMessage").textContent = "Strategy saved locally. Live execution remains disabled until a separate execution module is explicitly enabled.";
   });
