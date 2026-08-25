@@ -1,11 +1,16 @@
 # DSNPFX Import Status
 
-The recovered source archive has been received and validated locally before repository import.
+The recovered DSNPFX intelligence engine is now connected to the Market Insight redesign on `redesign-market-insight`.
 
-- Source files discovered: 108
+- Recovered source files reviewed: 108
+- Core runtime dependency closure imported into GitHub
 - Active Python compile check: PASS
-- Targeted production/qualification/calibration tests: 12 passed
+- Market Insight engine bridge smoke test: PASS
+- Targeted V8.3 production / market-qualification / calibration tests run locally: 12 passed
+- Live tick payload corrected to publish `displayed_quote` and `digit` for the dashboard
+- Standard Volatility markets remain production-eligible; 1-second markets remain shadow-learning markets
+- Predictions remain `WAIT / NO EDGE` unless the production accuracy gate publishes a verified signal
 - Secret scan: no hard-coded Deriv API token found; token configuration is environment-based
-- Temporary binary relay approach was abandoned after archive corruption; source will be imported as validated text files instead
+- Temporary bootstrap files were removed after the verified import
 
-No live trading credentials are stored in this repository.
+No live trade execution is enabled by this import, and no live trading credentials are stored in the repository.
