@@ -6,6 +6,7 @@ from backend.core.decision_engine import DecisionEngine
 from backend.core.statistical_digit_engine import StatisticalDigitEngine
 from backend.core.x2x_research_engine import X2XResearchEngine
 from backend.core.probability_analysis import ProbabilityAnalysisEngine
+from backend.core.hot_1000_continuation import Hot1000ContinuationEngine
 
 
 class DSPFXAIPipeline:
@@ -21,6 +22,7 @@ class DSPFXAIPipeline:
     - Statistical digit deviation / entropy
     - X2X pattern detector
     - Cautious 0-9 probability analysis with uncertainty shrinkage
+    - Exact 1000-tick hot-digit continuation hypothesis
 
     Momentum remains disabled until an independent algorithm is implemented.
     """
@@ -42,6 +44,7 @@ class DSPFXAIPipeline:
         self.statistics = StatisticalDigitEngine(self.digits)
         self.x2x = X2XResearchEngine(self.digits)
         self.probability_analysis = ProbabilityAnalysisEngine(self.digits)
+        self.hot_1000 = Hot1000ContinuationEngine(self.digits)
 
         for previous_digit, current_digit in zip(
             self.digits,
@@ -75,15 +78,11 @@ class DSPFXAIPipeline:
             else None
         )
 
-        # Use all 2-5 digit contexts, but require historical support before a
-        # sequence is allowed into the voting ensemble.
         sequence_result = self.sequence.predict(min_support=3)
         sequence_prediction = None
         if sequence_result and sequence_result.get("qualified"):
             sequence_prediction = sequence_result.get("prediction")
 
-        # Kept for measurement only. DecisionEngine forces transition weight to
-        # zero because it duplicates the first-order Markov calculation.
         current_digit = self.digits[-1]
         transition_prediction = self.transition.predict(current_digit)
         transition_confidence = self.transition.confidence(current_digit)
@@ -126,6 +125,7 @@ class DSPFXAIPipeline:
         statistical_report = self.statistics.analyse()
         x2x_report = self.x2x.analyse()
         probability_report = self.probability_analysis.analyse()
+        hot_1000_report = self.hot_1000.analyse()
 
         result["model_metadata"] = {
             "frequency": {
@@ -186,6 +186,7 @@ class DSPFXAIPipeline:
             "statistical_deviation": statistical_report,
             "x2x": x2x_report,
             "probability_analysis": probability_report,
+            "hot_1000_continuation": hot_1000_report,
         }
 
         return result
