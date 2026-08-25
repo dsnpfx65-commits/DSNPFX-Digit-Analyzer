@@ -5,6 +5,7 @@ from backend.core.transition_model import TransitionModel
 from backend.core.decision_engine import DecisionEngine
 from backend.core.statistical_digit_engine import StatisticalDigitEngine
 from backend.core.x2x_research_engine import X2XResearchEngine
+from backend.core.probability_analysis import ProbabilityAnalysisEngine
 
 
 class DSPFXAIPipeline:
@@ -19,6 +20,7 @@ class DSPFXAIPipeline:
     - First-order TransitionModel (duplicate of Markov, zero vote weight)
     - Statistical digit deviation / entropy
     - X2X pattern detector
+    - Cautious 0-9 probability analysis with uncertainty shrinkage
 
     Momentum remains disabled until an independent algorithm is implemented.
     """
@@ -39,6 +41,7 @@ class DSPFXAIPipeline:
         self.transition = TransitionModel()
         self.statistics = StatisticalDigitEngine(self.digits)
         self.x2x = X2XResearchEngine(self.digits)
+        self.probability_analysis = ProbabilityAnalysisEngine(self.digits)
 
         for previous_digit, current_digit in zip(
             self.digits,
@@ -122,6 +125,7 @@ class DSPFXAIPipeline:
 
         statistical_report = self.statistics.analyse()
         x2x_report = self.x2x.analyse()
+        probability_report = self.probability_analysis.analyse()
 
         result["model_metadata"] = {
             "frequency": {
@@ -181,6 +185,7 @@ class DSPFXAIPipeline:
             },
             "statistical_deviation": statistical_report,
             "x2x": x2x_report,
+            "probability_analysis": probability_report,
         }
 
         return result
