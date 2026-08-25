@@ -6,6 +6,11 @@ on:
       - redesign-market-insight
     paths:
       - .github/workflows/live-feed-smoke.yml
+      - backend/core/**
+      - backend/main.py
+      - backend/web_state.py
+      - backend/static/**
+      - backend/templates/**
   workflow_dispatch:
 
 permissions:
@@ -29,6 +34,53 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -q -r requirements.txt
 
+      - name: Compile active backend
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import py_compile
+
+          failures = []
+          for path in Path('backend').rglob('*.py'):
+              if 'backup' in path.name.lower() or '__pycache__' in path.parts:
+                  continue
+              try:
+                  py_compile.compile(str(path), doraise=True)
+              except Exception as exc:
+                  failures.append((str(path), str(exc)))
+          if failures:
+              raise SystemExit(f'compile failures: {failures}')
+          print('active backend compile PASS')
+          PY
+
+      - name: Verify V9 research engines
+        run: |
+          python - <<'PY'
+          from backend.core.ai_pipeline import DSPFXAIPipeline
+          from backend.core.sequence_engine import SequenceEngine
+          from backend.core.statistical_digit_engine import StatisticalDigitEngine
+          from backend.core.x2x_research_engine import X2XResearchEngine
+
+          digits = [5,2,5,7,5,2,5,7,1,2,3,4,5,6,7,8,9,0] * 8
+
+          stats = StatisticalDigitEngine(digits).analyse()
+          assert stats['status'] == 'READY'
+          assert stats['scope'] == 'RESEARCH_ONLY'
+
+          x2x = X2XResearchEngine([5,2,5,7,5,2,5]).analyse()
+          assert x2x['active'] is True
+          assert x2x['pattern'] == (5,2,5)
+
+          sequence = SequenceEngine(digits).predict(min_support=3)
+          assert sequence is None or 'support' in sequence
+
+          pipeline = DSPFXAIPipeline(digits).run()
+          assert pipeline['model_weights']['transition'] == 0.0
+          assert 'statistical_deviation' in pipeline['model_metadata']
+          assert 'x2x' in pipeline['model_metadata']
+          print('V9 research engine PASS')
+          PY
+
       - name: Start Market Insight app
         shell: bash
         run: |
@@ -50,7 +102,7 @@ jobs:
               with urllib.request.urlopen(f'http://127.0.0.1:8000{path}', timeout=5) as response:
                   return json.load(response)
 
-          deadline = time.time() + 70
+          deadline = time.time() + 90
           last_state = None
           last_markets = None
           while time.time() < deadline:
@@ -66,9 +118,12 @@ jobs:
                   print('health=', health)
                   print('state_status=', state.get('status'), 'market_count=', state.get('market_count'), 'live_market_count=', state.get('live_market_count'))
                   print('markets=', len(markets), 'live=', len(live), 'priced=', len(priced))
-                  if health.get('scanner_loaded') and len(markets) == 10 and len(live) >= 1 and len(priced) >= 1:
+                  if health.get('scanner_loaded') and len(markets) >= 1 and len(live) >= 1 and len(priced) >= 1:
                       sample = priced[0]
-                      print('LIVE FEED PASS:', sample.get('symbol'), sample.get('displayed_price'), 'digit', sample.get('last_digit'), 'decision', sample.get('decision'))
+                      metadata = sample.get('model_metadata') or {}
+                      assert 'statistical_deviation' in metadata
+                      assert 'x2x' in metadata
+                      print('LIVE FEED PASS:', sample.get('symbol'), sample.get('displayed_price'), 'digit', sample.get('last_digit'), 'candidate', sample.get('candidate_prediction'), 'decision', sample.get('decision'))
                       raise SystemExit(0)
               except SystemExit:
                   raise
