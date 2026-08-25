@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="DSNPFX Market Insight AI — evidence-first Deriv digit market scanner">
   <title>DSNPFX Market Insight AI</title>
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=11">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=12">
+  <link rel="stylesheet" href="/static/css/evidence-watch.css?v=12">
 </head>
 <body>
   <div class="ambient ambient-a"></div>
@@ -118,6 +119,49 @@
           The production gate requires trusted market-specific outcomes before a digit can be published. Current qualification requires a complete evidence window plus market quality, statistical evidence above the 10% exact-digit baseline, edge, raw-vote and independent-agreement checks. Research diagnostics never become verified confidence merely because their internal score is high.
         </p>
       </article>
+
+      <article class="panel evidence-watch-panel">
+        <div class="panel-heading evidence-watch-heading">
+          <div>
+            <p class="eyebrow">V9 Forward Evidence Watch</p>
+            <h2>Shadow Learning Monitor</h2>
+          </div>
+          <span class="watch-badge">10% Baseline</span>
+        </div>
+
+        <div class="shadow-summary-grid">
+          <div><span>Shadow Resolved</span><strong id="shadowResolved">0</strong></div>
+          <div><span>Shadow Accuracy</span><strong id="shadowAccuracy">0.00%</strong></div>
+          <div><span>Shadow Last 100</span><strong id="shadowRecentAccuracy">0.00%</strong></div>
+          <div><span>Research Resolved</span><strong id="researchResolved">0</strong></div>
+          <div><span>Open Predictions</span><strong id="shadowPending">0</strong></div>
+          <div><span>Statistically Above 10%</span><strong id="marketsAboveBaseline">0</strong></div>
+        </div>
+
+        <div class="watch-explainer">
+          <strong>What matters:</strong>
+          <span>Observed accuracy above 10% is only promising. A market is marked EVIDENCE EDGE only when its lower statistical confidence bound is also above the 10% exact-digit baseline.</span>
+        </div>
+
+        <div class="evidence-table-wrap">
+          <table class="evidence-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th>Trusted Samples</th>
+                <th>Accuracy</th>
+                <th>95% Lower</th>
+                <th>Agreeing Models</th>
+                <th>Best Model</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="evidenceWatchBody">
+              <tr><td colspan="7" class="empty-evidence">Waiting for prospective shadow outcomes...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
     </section>
   </main>
 
@@ -200,6 +244,6 @@
     </article>
   </template>
 
-  <script src="/static/js/dashboard.js?v=11"></script>
+  <script src="/static/js/dashboard.js?v=12"></script>
 </body>
 </html>
