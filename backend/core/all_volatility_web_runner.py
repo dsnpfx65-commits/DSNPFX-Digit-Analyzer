@@ -20,6 +20,7 @@ import json
 
 import websockets
 
+from backend.core.cold20_forward_audit import get_cold20_forward_snapshot
 from backend.core.market_discovery import MarketDiscovery
 from backend.core import volatility_web_runner as base
 from backend.core.multi_market_runner import WS_URL
@@ -131,6 +132,25 @@ def _named_market_payload(result, latest_ticks):
         cold20["proposal_quote_status"] = "WAITING"
         cold20["payout_action"] = "FORWARD_TEST_ONLY"
 
+    # This evidence is generated from records written before their resolving
+    # ticks. It is deliberately nested under research metadata and cannot
+    # promote a production Match signal.
+    forward_evidence = get_cold20_forward_snapshot(symbol)
+    cold20["forward_evidence"] = forward_evidence
+    cold20["forward_samples"] = forward_evidence.get("resolved", 0)
+    cold20["forward_accuracy_pct"] = forward_evidence.get("accuracy_pct", 0.0)
+    cold20["forward_lower_95_pct"] = forward_evidence.get("lower_95_pct", 0.0)
+    cold20["forward_average_break_even_pct"] = forward_evidence.get(
+        "average_break_even_pct"
+    )
+    cold20["forward_edge_vs_break_even_pp"] = forward_evidence.get(
+        "edge_vs_average_break_even_pp"
+    )
+    cold20["forward_decision"] = forward_evidence.get(
+        "decision",
+        "NO_VERIFIED_EDGE",
+    )
+
     metadata["probability_analysis"] = probability
     metadata["cold_20_differs"] = cold20
     payload["model_metadata"] = metadata
@@ -140,13 +160,12 @@ def _named_market_payload(result, latest_ticks):
     return payload
 
 
-# Add discovery names, explicit source metadata, and read-only proposal pricing
-# to the existing tested payload without changing its production evidence logic.
+# Add discovery names, explicit source metadata, read-only proposal pricing and
+# prospective COLD20 evidence without changing production evidence logic.
 base._market_payload = _named_market_payload
 
-# V9 prospective collector runs beside the production scanner. It creates one
-# next-tick SHADOW record per market so model evidence can accumulate in
-# parallel, while the existing production publication gate remains unchanged.
+# V9 prospective collectors run beside the production scanner. Existing Match
+# shadow learning and isolated COLD20 Differ evidence remain non-trading.
 install_v9_shadow_collector(base)
 
 
