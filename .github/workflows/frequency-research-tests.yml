@@ -1,0 +1,91 @@
+name: DSNPFX frequency research tests
+
+on:
+  push:
+    branches:
+      - redesign-market-insight
+    paths:
+      - backend/core/hot_1000_continuation.py
+      - backend/core/cold_reversion.py
+      - backend/core/ai_pipeline.py
+      - backend/static/js/proposal-edge.js
+      - .github/workflows/frequency-research-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frequency-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: redesign-market-insight
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Validate research engines
+        run: |
+          python - <<'PY'
+          from backend.core.ai_pipeline import DSPFXAIPipeline
+          from backend.core.hot_1000_continuation import Hot1000ContinuationEngine
+          from backend.core.cold_reversion import ColdReversionEngine
+
+          collecting = ColdReversionEngine([0, 1, 2, 3] * 20).analyse()
+          assert collecting['scope'] == 'RESEARCH_ONLY'
+          assert collecting['windows'][200]['status'] == 'COLLECTING'
+          assert collecting['primary_candidate'] is None
+
+          cold_200_digits = []
+          cold_200_digits += [0] * 11
+          cold_200_digits += [1] * 21
+          cold_200_digits += [2] * 21
+          cold_200_digits += [3] * 21
+          cold_200_digits += [4] * 21
+          cold_200_digits += [5] * 21
+          cold_200_digits += [6] * 21
+          cold_200_digits += [7] * 21
+          cold_200_digits += [8] * 21
+          cold_200_digits += [9] * 21
+          assert len(cold_200_digits) == 200
+
+          cold_200 = ColdReversionEngine(cold_200_digits).analyse()
+          report_200 = cold_200['windows'][200]
+          assert report_200['status'] == 'READY'
+          assert report_200['candidate'] == 0
+          assert report_200['frequency_pct'] == 5.5
+          assert report_200['deviation_vs_10pct_pp'] == -4.5
+          assert report_200['research_action'] == 'FORWARD_TEST'
+
+          tied = ColdReversionEngine(list(range(10)) * 20).analyse()['windows'][200]
+          assert tied['status'] == 'TIED_COLD_DIGITS'
+          assert tied['candidate'] is None
+
+          hot_digits = []
+          hot_digits += [9] * 145
+          for digit in range(9):
+              hot_digits += [digit] * 95
+          assert len(hot_digits) == 1000
+          hot = Hot1000ContinuationEngine(hot_digits).analyse()
+          assert hot['status'] == 'READY'
+          assert hot['candidate'] == 9
+          assert hot['frequency_pct'] == 14.5
+
+          pipeline = DSPFXAIPipeline(hot_digits).run()
+          metadata = pipeline['model_metadata']
+          assert metadata['hot_1000_continuation']['scope'] == 'RESEARCH_ONLY'
+          assert metadata['cold_reversion']['scope'] == 'RESEARCH_ONLY'
+          assert set(metadata['cold_reversion']['windows']) == {200, 500, 1000}
+          print('HOT/COLD research engine PASS')
+          PY
+
+      - name: Validate dashboard JavaScript
+        run: |
+          node --check backend/static/js/proposal-edge.js
+          grep -q 'COLD REVERSION' backend/static/js/proposal-edge.js
+          grep -q 'HOT 1000 CONTINUATION' backend/static/js/proposal-edge.js
+          echo 'HOT/COLD dashboard telemetry PASS'
