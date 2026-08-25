@@ -23,6 +23,7 @@ import websockets
 from backend.core.market_discovery import MarketDiscovery
 from backend.core import volatility_web_runner as base
 from backend.core.multi_market_runner import WS_URL
+from backend.core.v9_shadow_collector import install as install_v9_shadow_collector
 from backend.web_state import publish_state
 
 
@@ -69,6 +70,11 @@ def _named_market_payload(result, latest_ticks):
 # Add discovery names to the existing tested payload without changing its
 # evidence or signal logic.
 base._market_payload = _named_market_payload
+
+# V9 prospective collector runs beside the production scanner. It creates one
+# next-tick SHADOW record per market so model evidence can accumulate in
+# parallel, while the existing production publication gate remains unchanged.
+install_v9_shadow_collector(base)
 
 
 async def _probe_tick_candidates(symbols: set[str]) -> set[str]:
