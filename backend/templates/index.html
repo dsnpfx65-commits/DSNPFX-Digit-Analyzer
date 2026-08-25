@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="DSNPFX Market Insight AI — evidence-first Deriv digit market scanner">
   <title>DSNPFX Market Insight AI</title>
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=13">
-  <link rel="stylesheet" href="/static/css/evidence-watch.css?v=13">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=14">
+  <link rel="stylesheet" href="/static/css/evidence-watch.css?v=14">
+  <link rel="stylesheet" href="/static/css/proposal-edge.css?v=14">
 </head>
 <body>
   <div class="ambient ambient-a"></div>
@@ -30,7 +31,7 @@
         <p class="eyebrow">Live Market Scanner · V9 Research Layer</p>
         <h2>Verified digit opportunities only.</h2>
         <p class="intro-copy">
-          Every supported Volatility market is scanned continuously from the Deriv Options / Digits tick feed. The green scanner reveals a Match digit only after the production evidence gate approves it. V9 research candidates, N-gram support, statistical deviation, X2X telemetry and forward evidence are visible separately so candidate strength is never presented as a verified win probability.
+          Every supported Volatility market is scanned continuously from the Deriv Options / Digits tick feed. The green scanner reveals a Match digit only after the production evidence gate approves it. Research probability, live DIGITMATCH break-even pricing, N-gram support, strict X-2-X telemetry and forward evidence are shown separately so a model estimate is never presented as verified win probability.
         </p>
       </div>
       <div class="system-summary">
@@ -55,6 +56,7 @@
         </div>
         <div class="heading-meta">
           <span class="research-badge">Deriv Options / Digits Feed</span>
+          <span class="research-badge">Proposal Edge · Research Only</span>
           <span class="research-badge">Candidate ≠ Signal</span>
           <p id="lastUpdate" class="muted">Waiting for live ticks</p>
         </div>
@@ -118,7 +120,7 @@
           <div><span>Pending</span><strong id="pendingSignals">0</strong></div>
         </div>
         <p class="evidence-note">
-          The production gate requires trusted market-specific outcomes before a digit can be published. Current qualification requires a complete evidence window plus market quality, statistical evidence above the 10% exact-digit baseline, edge, raw-vote and independent-agreement checks. Research diagnostics never become verified confidence merely because their internal score is high.
+          The production gate requires trusted market-specific outcomes before a digit can be published. Current qualification requires a complete evidence window plus market quality, statistical evidence above the 10% exact-digit baseline, edge, raw-vote and independent-agreement checks. Proposal edge is research telemetry and does not bypass these requirements.
         </p>
       </article>
 
@@ -216,6 +218,25 @@
         <div class="readiness-track"><span class="readiness-bar"></span></div>
         <p class="candidate-warning">Research candidate only — not a trade signal.</p>
 
+        <section class="proposal-edge-panel" aria-label="DIGITMATCH proposal edge research">
+          <div class="proposal-edge-heading">
+            <div>
+              <span>Live DIGITMATCH Proposal Edge</span>
+              <small>Research only · does not bypass production gate</small>
+            </div>
+            <strong class="proposal-status waiting">WAITING QUOTE</strong>
+          </div>
+          <div class="proposal-edge-grid">
+            <div><span>Best Match</span><strong class="proposal-best-digit">--</strong></div>
+            <div><span>Model Estimate</span><strong class="proposal-model-estimate">--</strong></div>
+            <div><span>Break-even</span><strong class="proposal-break-even">--</strong></div>
+            <div><span>Quoted Edge</span><strong class="proposal-edge">--</strong></div>
+            <div><span>Ask</span><strong class="proposal-ask">--</strong></div>
+            <div><span>Payout</span><strong class="proposal-payout">--</strong></div>
+            <div><span>Research Reliability</span><strong class="proposal-reliability">--</strong></div>
+          </div>
+        </section>
+
         <div class="mini-metrics">
           <div><span>Verified Confidence</span><strong class="verified-confidence">--</strong></div>
           <div><span>Actual Accuracy</span><strong class="actual-accuracy">--</strong></div>
@@ -234,8 +255,8 @@
             <div><span>N-gram Support</span><strong class="ngram-support">0</strong></div>
             <div><span>Max |Z|</span><strong class="z-score">--</strong></div>
             <div><span>Entropy</span><strong class="entropy-score">--</strong></div>
-            <div><span>X2X</span><strong class="x2x-status">INACTIVE</strong></div>
-            <div><span>X2X Research</span><strong class="x2x-candidate">--</strong></div>
+            <div><span>Strict X-2-X</span><strong class="x2x-status">INACTIVE</strong></div>
+            <div><span>X-2-X Research</span><strong class="x2x-candidate">--</strong></div>
           </div>
           <div class="model-votes"><span>Voting Models</span><strong class="model-vote-list">No active model votes</strong></div>
           <div class="gate-blocker"><span>Primary Blocker</span><strong class="primary-blocker">Collecting evidence</strong></div>
@@ -246,7 +267,8 @@
     </article>
   </template>
 
-  <script src="/static/js/dashboard.js?v=13"></script>
-  <script src="/static/js/evidence-watch.js?v=13"></script>
+  <script src="/static/js/dashboard.js?v=14"></script>
+  <script src="/static/js/proposal-edge.js?v=14"></script>
+  <script src="/static/js/evidence-watch.js?v=14"></script>
 </body>
 </html>
