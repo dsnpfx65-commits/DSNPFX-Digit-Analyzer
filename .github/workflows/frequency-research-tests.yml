@@ -8,6 +8,8 @@ on:
       - backend/core/hot_1000_continuation.py
       - backend/core/cold_reversion.py
       - backend/core/cold_20_differs.py
+      - backend/core/cold20_forward_audit.py
+      - backend/core/v9_shadow_collector.py
       - backend/core/proposal_quote_service.py
       - backend/core/all_volatility_web_runner.py
       - backend/core/ai_pipeline.py
@@ -37,10 +39,14 @@ jobs:
       - name: Validate research engines
         run: |
           python - <<'PY'
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+
           from backend.core.ai_pipeline import DSPFXAIPipeline
           from backend.core.hot_1000_continuation import Hot1000ContinuationEngine
           from backend.core.cold_reversion import ColdReversionEngine
           from backend.core.cold_20_differs import Cold20DiffersEngine
+          from backend.core.cold20_forward_audit import Cold20ForwardAudit
           from backend.core.proposal_quote_service import calculate_break_even_probability
 
           collecting = ColdReversionEngine([0, 1, 2, 3] * 20).analyse()
@@ -99,13 +105,67 @@ jobs:
           assert metadata['cold_20_differs']['scope'] == 'RESEARCH_ONLY'
           assert metadata['cold_20_differs']['contract_type'] == 'DIGITDIFF'
           assert set(metadata['cold_reversion']['windows']) == {200, 500, 1000}
-          print('HOT/COLD/COLD20 research engine PASS')
+
+          with TemporaryDirectory() as temp_dir:
+              audit = Cold20ForwardAudit(str(Path(temp_dir) / 'cold20.db'))
+              proposal = {
+                  'status': 'LIVE',
+                  'break_even_probability_pct': 91.2,
+                  'ask_price': 1.0,
+                  'payout': 1.09649,
+              }
+              assert audit.create_prediction(
+                  symbol='R_100',
+                  barrier=0,
+                  source_epoch=100,
+                  source_quote='100.20',
+                  cold_frequency_pct=5.0,
+                  historical_differ_rate_pct=95.0,
+                  proposal_quote=proposal,
+              ) is True
+              assert audit.create_prediction(
+                  symbol='R_100',
+                  barrier=0,
+                  source_epoch=100,
+                  source_quote='100.20',
+              ) is False
+              assert audit.resolve('R_100', 7, 100, '100.27') is None
+              resolved = audit.resolve('R_100', 7, 101, '100.27')
+              assert resolved['result'] == 'WIN'
+              assert resolved['barrier'] == 0
+
+              assert audit.create_prediction(
+                  symbol='R_100',
+                  barrier=3,
+                  source_epoch=101,
+                  source_quote='100.27',
+                  proposal_quote=proposal,
+              ) is True
+              resolved = audit.resolve('R_100', 3, 102, '100.23')
+              assert resolved['result'] == 'LOSS'
+
+              stats = audit.statistics('R_100')
+              assert stats['scope'] == 'RESEARCH_ONLY'
+              assert stats['contract_type'] == 'DIGITDIFF'
+              assert stats['resolved'] == 2
+              assert stats['wins'] == 1
+              assert stats['losses'] == 1
+              assert stats['accuracy_pct'] == 50.0
+              assert stats['priced_samples'] == 2
+              assert stats['average_break_even_pct'] == 91.2
+              assert stats['verified_edge'] is False
+              assert stats['decision'] == 'NO_VERIFIED_EDGE'
+              audit.close()
+
+          print('HOT/COLD/COLD20 prospective research PASS')
           PY
 
       - name: Compile modified Python
         run: |
           python -m py_compile \
             backend/core/cold_20_differs.py \
+            backend/core/cold20_forward_audit.py \
+            backend/core/v9_shadow_collector.py \
             backend/core/proposal_quote_service.py \
             backend/core/all_volatility_web_runner.py \
             backend/core/ai_pipeline.py
