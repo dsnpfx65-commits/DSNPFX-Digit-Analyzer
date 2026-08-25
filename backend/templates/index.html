@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="DSNPFX Market Insight AI — evidence-first Deriv digit market scanner">
+  <title>DSNPFX Market Insight AI</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=9">
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+  <header class="topbar">
+    <div class="brand-lockup">
+      <div class="brand-mark">D</div>
+      <div>
+        <p class="eyebrow">DSNPFX Intelligence</p>
+        <h1>Market Insight AI</h1>
+        <p class="brand-subtitle">Deriv Digit Match Intelligence</p>
+      </div>
+    </div>
+    <div id="connection" class="connection"><span></span>CONNECTING</div>
+  </header>
+  <main class="app-shell">
+    <section class="intro-card">
+      <div>
+        <p class="eyebrow">Live Market Scanner</p>
+        <h2>Verified digit opportunities only.</h2>
+        <p class="intro-copy">Every supported Volatility market is scanned continuously. The interface reveals a Match digit only when the production evidence gate approves it. Otherwise the correct decision remains WAIT / NO EDGE.</p>
+      </div>
+      <div class="system-summary">
+        <div><span>Markets</span><strong id="onlineMarkets">0 / 10</strong></div>
+        <div><span>Verified</span><strong id="verifiedSignals">0</strong></div>
+        <div><span>Status</span><strong id="scannerStatus">STARTING</strong></div>
+      </div>
+    </section>
+    <nav class="tabbar" aria-label="DSNPFX dashboard sections">
+      <button class="tab-button active" data-tab="insight" type="button">Market Insight</button>
+      <button class="tab-button" data-tab="setup" type="button">Bot Setup</button>
+      <button class="tab-button" data-tab="evidence" type="button">Evidence</button>
+    </nav>
+    <section id="tab-insight" class="tab-panel active">
+      <div class="section-heading">
+        <div><p class="eyebrow">All Volatility Markets</p><h2>Scanning in descending order</h2></div>
+        <p id="lastUpdate" class="muted">Waiting for live ticks</p>
+      </div>
+      <div id="marketStack" class="market-stack" aria-live="polite"></div>
+    </section>
+    <section id="tab-setup" class="tab-panel">
+      <div class="setup-grid">
+        <article class="panel bot-panel">
+          <div class="panel-heading"><div><p class="eyebrow">Execution Layer</p><h2>Bot Setup</h2></div><span class="safe-badge">CONTROL UI ONLY</span></div>
+          <div class="form-grid">
+            <label>Market<select id="botMarket"></select></label>
+            <label>Trade Type<select><option>Digits</option></select></label>
+            <label>Contract<select><option>Matches / Differs</option></select></label>
+            <label>Direction<select><option>Matches</option></select></label>
+            <label>Prediction<input id="botPrediction" value="WAIT" readonly></label>
+            <label>Stake<input id="stake" type="number" min="0.35" step="0.01" value="1.00"></label>
+            <label>Take Profit<input id="takeProfit" type="number" min="0" step="0.01" value="10.00"></label>
+            <label>Stop Loss<input id="stopLoss" type="number" min="0" step="0.01" value="5.00"></label>
+            <label>Martingale<select id="martingale"><option value="off">Off</option><option value="on">On</option></select></label>
+            <label>Multiplier<input id="multiplier" type="number" min="1" step="0.1" value="2.0"></label>
+            <label>Max Consecutive Losses<input id="maxLosses" type="number" min="1" step="1" value="3"></label>
+            <label>Restart on Error<select><option>Yes</option><option>No</option></select></label>
+          </div>
+          <div class="strategy-actions">
+            <button id="saveStrategy" class="secondary" type="button">Save Strategy</button>
+            <button id="startBot" class="primary" type="button" disabled>Start Bot</button>
+            <button id="stopBot" class="danger" type="button" disabled>Stop</button>
+          </div>
+          <p id="botMessage" class="bot-message">Live execution is intentionally disabled in this redesign build. A verified prediction can populate the setup panel, but no order is sent.</p>
+        </article>
+        <article class="panel selection-panel">
+          <p class="eyebrow">Verified Feed</p><h2>Selected Opportunity</h2>
+          <div class="selected-orb"><span>Prediction</span><strong id="selectedPrediction">--</strong></div>
+          <dl class="selection-list">
+            <div><dt>Market</dt><dd id="selectedMarket">None</dd></div>
+            <div><dt>Decision</dt><dd id="selectedDecision">WAIT</dd></div>
+            <div><dt>Verified Confidence</dt><dd id="selectedConfidence">0.00%</dd></div>
+            <div><dt>Edge Score</dt><dd id="selectedEdge">0.00</dd></div>
+          </dl>
+        </article>
+      </div>
+    </section>
+    <section id="tab-evidence" class="tab-panel">
+      <article class="panel evidence-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Production Evidence</p><h2>Trusted Performance</h2></div></div>
+        <div class="evidence-grid">
+          <div><span>Wins</span><strong id="productionWins">0</strong></div>
+          <div><span>Losses</span><strong id="productionLosses">0</strong></div>
+          <div><span>Accuracy</span><strong id="productionAccuracy">0.00%</strong></div>
+          <div><span>Recent Accuracy</span><strong id="recentAccuracy">0.00%</strong></div>
+          <div><span>Resolved</span><strong id="resolvedSignals">0</strong></div>
+          <div><span>Pending</span><strong id="pendingSignals">0</strong></div>
+        </div>
+        <p class="evidence-note">Shadow, legacy and research outcomes are excluded from trusted production accuracy. The dashboard must not convert an internal model score into a win-probability claim.</p>
+      </article>
+    </section>
+  </main>
+  <template id="marketCardTemplate">
+    <article class="market-card waiting">
+      <div class="market-copy">
+        <div class="market-title-row">
+          <div><p class="market-kicker">Volatility Market</p><h3 class="market-name">Volatility 100 (1s)</h3></div>
+          <span class="market-mode">SHADOW</span>
+        </div>
+        <div class="market-tick-row">
+          <div><span>Live Price</span><strong class="live-price">--</strong></div>
+          <div><span>Last Digit</span><strong class="last-digit">--</strong></div>
+          <div><span>Regime</span><strong class="market-regime">COLLECTING</strong></div>
+        </div>
+      </div>
+      <div class="scanner-column">
+        <div class="scanner-orb" aria-label="Prediction scanner"><div class="scanner-rings"></div><div class="scanner-sweep"></div><div class="scanner-core"><span class="scanner-label">SCANNING</span><strong class="scanner-digit">--</strong></div></div>
+        <strong class="match-status">Analyzing</strong>
+        <small class="scanner-note">No verified edge yet</small>
+      </div>
+      <div class="market-evidence">
+        <div class="decision-pill">WAIT</div>
+        <div class="mini-metrics">
+          <div><span>Verified Confidence</span><strong class="verified-confidence">0.00%</strong></div>
+          <div><span>Edge Score</span><strong class="edge-score">0.00</strong></div>
+          <div><span>Model Agreement</span><strong class="model-agreement">0 / 0</strong></div>
+          <div><span>Quality</span><strong class="market-quality">LEARNING</strong></div>
+        </div>
+        <button class="use-signal" type="button" disabled>Use Verified Signal</button>
+      </div>
+    </article>
+  </template>
+  <script src="/static/js/dashboard.js?v=9"></script>
+</body>
+</html>
