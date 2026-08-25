@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import sqlite3
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -21,7 +22,23 @@ from backend.web_state import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent
 PREDICTION_DB = BASE_DIR / "data" / "multi_market_learning.db"
+
+
+def _build_revision() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=PROJECT_DIR,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+BUILD_REVISION = _build_revision()
 
 try:
     from backend.core.all_volatility_web_runner import run_forever
@@ -59,9 +76,28 @@ app = FastAPI(title="DSNPFX Market Insight AI", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
+@app.middleware("http")
+async def disable_browser_cache(request, call_next):
+    response = await call_next(request)
+    # Codespaces previews can keep an earlier dashboard shell/static bundle
+    # around after a git pull. Disable browser/proxy caching while redesign is
+    # active so the served UI always matches the running backend revision.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    response.headers["X-DSNPFX-Build"] = BUILD_REVISION
+    return response
+
+
 @app.get("/")
 async def dashboard():
-    return FileResponse(BASE_DIR / "templates" / "index.html")
+    return FileResponse(
+        BASE_DIR / "templates" / "index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "X-DSNPFX-Build": BUILD_REVISION,
+        },
+    )
 
 
 @app.get("/api/health")
@@ -70,6 +106,8 @@ async def health():
     return {
         "status": "ok",
         "engine": "dsnpfx-market-insight",
+        "build_revision": BUILD_REVISION,
+        "ui_generation": "V9_RESEARCH_LAYER",
         "market_count": current.get("market_count", 0),
         "live_market_count": current.get("live_market_count", 0),
         "scanner_loaded": run_forever is not None,
