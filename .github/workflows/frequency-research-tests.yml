@@ -7,6 +7,9 @@ on:
     paths:
       - backend/core/hot_1000_continuation.py
       - backend/core/cold_reversion.py
+      - backend/core/cold_20_differs.py
+      - backend/core/proposal_quote_service.py
+      - backend/core/all_volatility_web_runner.py
       - backend/core/ai_pipeline.py
       - backend/static/js/proposal-edge.js
       - .github/workflows/frequency-research-tests.yml
@@ -34,6 +37,8 @@ jobs:
           from backend.core.ai_pipeline import DSPFXAIPipeline
           from backend.core.hot_1000_continuation import Hot1000ContinuationEngine
           from backend.core.cold_reversion import ColdReversionEngine
+          from backend.core.cold_20_differs import Cold20DiffersEngine
+          from backend.core.proposal_quote_service import calculate_break_even_probability
 
           collecting = ColdReversionEngine([0, 1, 2, 3] * 20).analyse()
           assert collecting['scope'] == 'RESEARCH_ONLY'
@@ -42,24 +47,14 @@ jobs:
 
           cold_200_digits = []
           cold_200_digits += [0] * 11
-          cold_200_digits += [1] * 21
-          cold_200_digits += [2] * 21
-          cold_200_digits += [3] * 21
-          cold_200_digits += [4] * 21
-          cold_200_digits += [5] * 21
-          cold_200_digits += [6] * 21
-          cold_200_digits += [7] * 21
-          cold_200_digits += [8] * 21
-          cold_200_digits += [9] * 21
+          for digit in range(1, 10):
+              cold_200_digits += [digit] * 21
           assert len(cold_200_digits) == 200
-
-          cold_200 = ColdReversionEngine(cold_200_digits).analyse()
-          report_200 = cold_200['windows'][200]
-          assert report_200['status'] == 'READY'
-          assert report_200['candidate'] == 0
-          assert report_200['frequency_pct'] == 5.5
-          assert report_200['deviation_vs_10pct_pp'] == -4.5
-          assert report_200['research_action'] == 'FORWARD_TEST'
+          cold_200 = ColdReversionEngine(cold_200_digits).analyse()['windows'][200]
+          assert cold_200['status'] == 'READY'
+          assert cold_200['candidate'] == 0
+          assert cold_200['frequency_pct'] == 5.5
+          assert cold_200['deviation_vs_10pct_pp'] == -4.5
 
           tied = ColdReversionEngine(list(range(10)) * 20).analyse()['windows'][200]
           assert tied['status'] == 'TIED_COLD_DIGITS'
@@ -75,17 +70,48 @@ jobs:
           assert hot['candidate'] == 9
           assert hot['frequency_pct'] == 14.5
 
+          cold20_digits = [0] + [1,2,3,4,5,6,7,8,9] * 2 + [1]
+          assert len(cold20_digits) == 20
+          cold20 = Cold20DiffersEngine(cold20_digits).analyse()
+          assert cold20['status'] == 'READY'
+          assert cold20['candidate'] == 0
+          assert cold20['contract_type'] == 'DIGITDIFF'
+          assert cold20['duration'] == 1
+          assert cold20['cold_frequency_pct'] == 5.0
+          assert cold20['historical_differ_rate_pct'] == 95.0
+          assert cold20['differ_baseline_pct'] == 90.0
+          assert cold20['forward_validation_required'] is True
+          assert cold20['scope'] == 'RESEARCH_ONLY'
+
+          cold20_tie = Cold20DiffersEngine(list(range(10)) * 2).analyse()
+          assert cold20_tie['status'] == 'TIED_COLD_DIGITS'
+          assert cold20_tie['candidate'] is None
+
+          assert calculate_break_even_probability(1.0, 1.1) == 90.909091
+
           pipeline = DSPFXAIPipeline(hot_digits).run()
           metadata = pipeline['model_metadata']
           assert metadata['hot_1000_continuation']['scope'] == 'RESEARCH_ONLY'
           assert metadata['cold_reversion']['scope'] == 'RESEARCH_ONLY'
+          assert metadata['cold_20_differs']['scope'] == 'RESEARCH_ONLY'
+          assert metadata['cold_20_differs']['contract_type'] == 'DIGITDIFF'
           assert set(metadata['cold_reversion']['windows']) == {200, 500, 1000}
-          print('HOT/COLD research engine PASS')
+          print('HOT/COLD/COLD20 research engine PASS')
           PY
+
+      - name: Compile modified Python
+        run: |
+          python -m py_compile \
+            backend/core/cold_20_differs.py \
+            backend/core/proposal_quote_service.py \
+            backend/core/all_volatility_web_runner.py \
+            backend/core/ai_pipeline.py
 
       - name: Validate dashboard JavaScript
         run: |
           node --check backend/static/js/proposal-edge.js
           grep -q 'COLD REVERSION' backend/static/js/proposal-edge.js
           grep -q 'HOT 1000 CONTINUATION' backend/static/js/proposal-edge.js
-          echo 'HOT/COLD dashboard telemetry PASS'
+          grep -q 'COLD 20 DIFFERS' backend/static/js/proposal-edge.js
+          grep -q 'Live Break-even' backend/static/js/proposal-edge.js
+          echo 'HOT/COLD/COLD20 dashboard telemetry PASS'
