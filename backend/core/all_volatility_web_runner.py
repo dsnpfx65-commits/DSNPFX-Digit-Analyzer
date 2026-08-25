@@ -23,6 +23,7 @@ import websockets
 from backend.core.market_discovery import MarketDiscovery
 from backend.core import volatility_web_runner as base
 from backend.core.multi_market_runner import WS_URL
+from backend.core.proposal_quote_service import get_cached_match_quote
 from backend.core.v9_shadow_collector import install as install_v9_shadow_collector
 from backend.web_state import publish_state
 
@@ -60,17 +61,63 @@ _MARKET_NAMES: dict[str, str] = {}
 _ORIGINAL_MARKET_PAYLOAD = base._market_payload
 
 
+def _number(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _named_market_payload(result, latest_ticks):
     payload = _ORIGINAL_MARKET_PAYLOAD(result, latest_ticks)
     symbol = payload.get("symbol")
     payload["name"] = _MARKET_NAMES.get(symbol, symbol)
     payload["price_source"] = "DERIV_OPTIONS"
     payload["price_source_label"] = "Deriv Options / Digits"
+
+    metadata = payload.get("model_metadata") or {}
+    probability = dict(metadata.get("probability_analysis") or {})
+    best_digit = probability.get("best_match_digit")
+    quote = get_cached_match_quote(symbol, best_digit)
+
+    if quote is not None:
+        break_even = _number(quote.get("break_even_probability_pct"))
+        estimate = _number(probability.get("best_match_estimate_pct"))
+        payout_edge = None
+        if break_even is not None and estimate is not None:
+            payout_edge = round(estimate - break_even, 4)
+
+        probability["break_even_probability_pct"] = break_even
+        probability["estimated_edge_vs_break_even_pp"] = payout_edge
+        probability["proposal_quote_status"] = quote.get("status")
+        probability["proposal_ask_price"] = quote.get("ask_price")
+        probability["proposal_payout"] = quote.get("payout")
+        probability["proposal_currency"] = quote.get("currency")
+        probability["proposal_updated_at"] = quote.get("updated_at")
+
+        if (
+            probability.get("research_action") == "WATCH"
+            and payout_edge is not None
+            and payout_edge >= 1.0
+            and quote.get("status") == "LIVE"
+        ):
+            probability["payout_action"] = "WATCH"
+        else:
+            probability["payout_action"] = "NO_TRADE"
+    else:
+        probability["proposal_quote_status"] = "WAITING"
+        probability["payout_action"] = "NO_TRADE"
+
+    metadata = dict(metadata)
+    metadata["probability_analysis"] = probability
+    payload["model_metadata"] = metadata
+    payload["proposal_quote"] = quote
+
     return payload
 
 
-# Add discovery names and explicit source metadata to the existing tested
-# payload without changing its evidence or signal logic.
+# Add discovery names, explicit source metadata, and read-only proposal pricing
+# to the existing tested payload without changing its production evidence logic.
 base._market_payload = _named_market_payload
 
 # V9 prospective collector runs beside the production scanner. It creates one
@@ -94,8 +141,6 @@ async def _probe_tick_candidates(symbols: set[str]) -> dict[str, dict]:
         max_queue=None,
     ) as websocket:
         for symbol in sorted(symbols):
-            # Snapshot tick request. Omitting subscribe is intentional: the
-            # probe only validates that this exact Options/Digits symbol exists.
             await websocket.send(json.dumps({"ticks": symbol}))
 
             try:
@@ -155,8 +200,6 @@ async def _refresh_volatility_universe() -> list[dict]:
     try:
         tick_confirmed = await _probe_tick_candidates(missing_candidates)
     except Exception as error:
-        # The primary active_symbols universe remains usable if the supplemental
-        # probe is temporarily unavailable.
         print(
             "VOLATILITY SUPPLEMENTAL PROBE ERROR:",
             type(error).__name__,
@@ -195,9 +238,6 @@ async def _refresh_volatility_universe() -> list[dict]:
         }
     )
 
-    # base.run_once performs its own MarketDiscovery pass and requires every
-    # monitored symbol to be returned. Freeze this verified merged Options
-    # universe for that cycle rather than falling back to the legacy response.
     frozen = _MergedVolatilityDiscovery(markets)
 
     class CycleDiscovery:
