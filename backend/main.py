@@ -46,12 +46,25 @@ BUILD_REVISION = _build_revision()
 # that omit pip_size.
 try:
     from backend.core import volatility_web_runner as _volatility_web_runner
-    from backend.core.tick_precision_runtime import install_precision_runtime
+    from backend.core.tick_precision_runtime import (
+        get_precision_runtime_snapshot,
+        install_precision_runtime,
+    )
 
     install_precision_runtime(_volatility_web_runner)
     precision_runtime_loaded = True
 except Exception:
     precision_runtime_loaded = False
+
+    def get_precision_runtime_snapshot():
+        return {
+            "totals": {},
+            "tracked_markets": 0,
+            "healthy_markets": 0,
+            "stale_markets": 0,
+            "waiting_markets": 0,
+            "markets": [],
+        }
 
 try:
     from backend.core.all_volatility_web_runner import run_forever
@@ -92,9 +105,6 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 @app.middleware("http")
 async def disable_browser_cache(request, call_next):
     response = await call_next(request)
-    # Codespaces previews can keep an earlier dashboard shell/static bundle
-    # around after a git pull. Disable browser/proxy caching while redesign is
-    # active so the served UI always matches the running backend revision.
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
@@ -116,6 +126,7 @@ async def dashboard():
 @app.get("/api/health")
 async def health():
     current = get_state()
+    precision = get_precision_runtime_snapshot()
     return {
         "status": "ok",
         "engine": "dsnpfx-market-insight",
@@ -126,6 +137,32 @@ async def health():
         "scanner_loaded": run_forever is not None,
         "proposal_quotes_loaded": run_proposal_quote_loop is not None,
         "precision_runtime_loaded": precision_runtime_loaded,
+        "precision_tracked_markets": precision.get("tracked_markets", 0),
+        "precision_healthy_markets": precision.get("healthy_markets", 0),
+        "precision_waiting_markets": precision.get("waiting_markets", 0),
+        "precision_stale_markets": precision.get("stale_markets", 0),
+        "metadata_precision_ticks": (precision.get("totals") or {}).get(
+            "metadata_precision",
+            0,
+        ),
+        "missing_precision_ticks": (precision.get("totals") or {}).get(
+            "missing_precision",
+            0,
+        ),
+    }
+
+
+@app.get("/api/runtime-health")
+async def runtime_health():
+    """Read-only per-market tick/precision health diagnostics."""
+    precision = get_precision_runtime_snapshot()
+    current = get_state()
+    return {
+        "build_revision": BUILD_REVISION,
+        "precision_runtime_loaded": precision_runtime_loaded,
+        "market_count": current.get("market_count", 0),
+        "live_market_count": current.get("live_market_count", 0),
+        **precision,
     }
 
 
@@ -161,12 +198,7 @@ async def statistics():
 
 @app.get("/api/predictions.csv")
 async def prediction_history_csv():
-    """Export the prospective prediction audit log as CSV.
-
-    This endpoint is read-only and deliberately exports the evidence recorded
-    before each next-tick outcome together with the resolved result. It does not
-    create, modify, or execute trades.
-    """
+    """Export the prospective prediction audit log as CSV."""
     columns = [
         "id",
         "created_at",
