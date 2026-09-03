@@ -40,6 +40,19 @@ def _build_revision() -> str:
 
 BUILD_REVISION = _build_revision()
 
+# Install the precision-aware Deriv tick receiver before importing the dynamic
+# all-Volatility runner. This keeps the validated web runner architecture while
+# allowing official active-symbol/probe precision metadata to backfill ticks
+# that omit pip_size.
+try:
+    from backend.core import volatility_web_runner as _volatility_web_runner
+    from backend.core.tick_precision_runtime import install_precision_runtime
+
+    install_precision_runtime(_volatility_web_runner)
+    precision_runtime_loaded = True
+except Exception:
+    precision_runtime_loaded = False
+
 try:
     from backend.core.all_volatility_web_runner import run_forever
 except Exception:
@@ -112,6 +125,7 @@ async def health():
         "live_market_count": current.get("live_market_count", 0),
         "scanner_loaded": run_forever is not None,
         "proposal_quotes_loaded": run_proposal_quote_loop is not None,
+        "precision_runtime_loaded": precision_runtime_loaded,
     }
 
 
