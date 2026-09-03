@@ -32,7 +32,6 @@ _CACHE: dict[tuple[str, str, int], dict] = {}
 
 
 def calculate_break_even_probability(ask_price, payout) -> float | None:
-    """Return stake/total-payout as a percentage when both values are valid."""
     try:
         ask = float(ask_price)
         total_payout = float(payout)
@@ -71,8 +70,6 @@ def _cache_quote(symbol: str, contract_type: str, digit: int, payload: dict) -> 
 
 
 class ProposalQuoteClient:
-    """Persistent client for public one-tick digit proposal snapshots."""
-
     def __init__(self):
         self.websocket = None
 
@@ -197,38 +194,61 @@ class ProposalQuoteClient:
         return await self.request_quote(symbol, digit, "DIGITDIFF")
 
 
+def _valid_digit(value):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 <= value <= 9 else None
+
+
+def _research_quote_targets(symbol: str, market: dict) -> set[tuple[str, str, int]]:
+    """Return every research barrier whose live economics we need to measure."""
+    targets: set[tuple[str, str, int]] = set()
+    metadata = market.get("model_metadata") or {}
+
+    probability = metadata.get("probability_analysis") or {}
+    digit = _valid_digit(probability.get("best_match_digit"))
+    if digit is None:
+        digit = _valid_digit(market.get("candidate_prediction"))
+    if digit is not None:
+        targets.add((symbol, "DIGITMATCH", digit))
+
+    hot = metadata.get("hot_1000_continuation") or {}
+    hot_digit = _valid_digit(hot.get("candidate"))
+    if hot_digit is not None:
+        targets.add((symbol, "DIGITMATCH", hot_digit))
+
+    cold = metadata.get("cold_reversion") or {}
+    windows = cold.get("windows") or {}
+    for window in (200, 500, 1000):
+        report = windows.get(window) or windows.get(str(window)) or {}
+        cold_digit = _valid_digit(report.get("candidate"))
+        if cold_digit is not None:
+            targets.add((symbol, "DIGITMATCH", cold_digit))
+
+    cold20 = metadata.get("cold_20_differs") or {}
+    differ_digit = _valid_digit(cold20.get("candidate"))
+    if differ_digit is not None:
+        targets.add((symbol, "DIGITDIFF", differ_digit))
+
+    return targets
+
+
 async def run_proposal_quote_loop() -> None:
-    """Refresh research Match and Cold-20 Differ proposal prices."""
+    """Refresh live proposal economics for every active research strategy."""
     client = ProposalQuoteClient()
     try:
         while True:
             markets = get_markets()
-            targets: list[tuple[str, str, int]] = []
+            targets: set[tuple[str, str, int]] = set()
 
             for symbol, market in markets.items():
                 if str(market.get("status", "")).lower() != "live":
                     continue
+                targets.update(_research_quote_targets(str(symbol), market))
 
-                metadata = market.get("model_metadata") or {}
-                probability = metadata.get("probability_analysis") or {}
-                match_digit = probability.get("best_match_digit")
-                if match_digit is None:
-                    match_digit = market.get("candidate_prediction")
-                try:
-                    if match_digit is not None and 0 <= int(match_digit) <= 9:
-                        targets.append((str(symbol), "DIGITMATCH", int(match_digit)))
-                except (TypeError, ValueError):
-                    pass
-
-                cold20 = metadata.get("cold_20_differs") or {}
-                differ_digit = cold20.get("candidate")
-                try:
-                    if differ_digit is not None and 0 <= int(differ_digit) <= 9:
-                        targets.append((str(symbol), "DIGITDIFF", int(differ_digit)))
-                except (TypeError, ValueError):
-                    pass
-
-            for symbol, contract_type, digit in sorted(set(targets)):
+            for symbol, contract_type, digit in sorted(targets):
                 quote = await client.request_quote(symbol, digit, contract_type)
                 _cache_quote(symbol, contract_type, digit, quote)
                 await asyncio.sleep(0.05)
