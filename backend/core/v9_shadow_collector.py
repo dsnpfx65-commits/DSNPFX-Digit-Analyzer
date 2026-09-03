@@ -4,9 +4,9 @@ The production scanner historically allowed only one global pending prediction.
 This wrapper keeps production publication unchanged while recording one
 non-trading next-tick ensemble SHADOW candidate per eligible Volatility market.
 
-It also maintains a completely separate COLD_20_DIFFERS audit. COLD20 records
-use DIGITDIFF semantics (WIN when the next digit differs from the barrier) and
-never update adaptive production model memory.
+Independent strategy audits are isolated from adaptive production model memory.
+They record HOT1000 MATCH, COLD200/500/1000 MATCH, and COLD20 DIFFERS candidates
+before the resolving tick so their actual forward performance can be compared.
 """
 
 from __future__ import annotations
@@ -15,29 +15,40 @@ import asyncio
 
 from backend.core.cold20_forward_audit import get_cold20_forward_audit
 from backend.core.market_family import attach_family_metadata
-from backend.core.proposal_quote_service import get_cached_differ_quote
+from backend.core.proposal_quote_service import (
+    get_cached_differ_quote,
+    get_cached_match_quote,
+)
+from backend.core.strategy_forward_audit import get_strategy_forward_audit
 
 
 _ORIGINAL_SCAN_LOOP = None
 
 
-def _install_cold20_resolver(learning) -> None:
-    """Resolve the independent COLD20 audit from the same accepted next tick."""
-    if getattr(learning, "_DSNPFX_COLD20_RESOLVER_INSTALLED", False):
+def _install_research_resolver(learning) -> None:
+    """Resolve independent research audits from the same accepted next tick."""
+    if getattr(learning, "_DSNPFX_RESEARCH_RESOLVER_INSTALLED", False):
         return
 
     original_resolve = learning.resolve
-    audit = get_cold20_forward_audit()
+    cold20_audit = get_cold20_forward_audit()
+    strategy_audit = get_strategy_forward_audit()
 
-    def resolve_with_cold20(
+    def resolve_with_research(
         symbol: str,
         actual: int,
         tick_epoch: int,
         tick_quote,
     ):
-        # Resolve research evidence first. This does not alter the production
-        # prediction table or model memory.
-        audit.resolve(
+        # These isolated research tables never alter model weights or the
+        # production prediction table.
+        cold20_audit.resolve(
+            symbol,
+            actual,
+            tick_epoch=tick_epoch,
+            tick_quote=tick_quote,
+        )
+        strategy_audit.resolve(
             symbol,
             actual,
             tick_epoch=tick_epoch,
@@ -50,12 +61,11 @@ def _install_cold20_resolver(learning) -> None:
             tick_quote=tick_quote,
         )
 
-    learning.resolve = resolve_with_cold20
-    learning._DSNPFX_COLD20_RESOLVER_INSTALLED = True
+    learning.resolve = resolve_with_research
+    learning._DSNPFX_RESEARCH_RESOLVER_INSTALLED = True
 
 
 def install(base_module):
-    """Install the V9 scan wrapper onto volatility_web_runner once."""
     global _ORIGINAL_SCAN_LOOP
 
     if getattr(base_module, "_DSNPFX_V9_SHADOW_INSTALLED", False):
@@ -72,7 +82,7 @@ def install(base_module):
         worker_executor,
         generation,
     ):
-        _install_cold20_resolver(learning)
+        _install_research_resolver(learning)
 
         production_task = asyncio.create_task(
             _ORIGINAL_SCAN_LOOP(
@@ -121,26 +131,30 @@ def install(base_module):
     base_module._DSNPFX_V9_SHADOW_INSTALLED = True
 
 
+def _ready_digit(report: dict) -> int | None:
+    if str(report.get("status", "")).upper() != "READY":
+        return None
+    candidate = report.get("candidate")
+    try:
+        candidate = int(candidate)
+    except (TypeError, ValueError):
+        return None
+    return candidate if 0 <= candidate <= 9 else None
+
+
 def _record_cold20_candidate(result: dict, source_tick: dict) -> bool:
-    """Create one strictly prospective COLD20 record for this market."""
     metadata = result.get("model_metadata") or {}
     cold20 = metadata.get("cold_20_differs") or {}
-    candidate = cold20.get("candidate")
-
-    if candidate is None or str(cold20.get("status", "")).upper() != "READY":
-        return False
-
-    try:
-        barrier = int(candidate)
-    except (TypeError, ValueError):
-        return False
-    if not 0 <= barrier <= 9:
+    barrier = _ready_digit(cold20)
+    if barrier is None:
         return False
 
     symbol = result.get("symbol")
     proposal_quote = get_cached_differ_quote(symbol, barrier)
 
-    return get_cold20_forward_audit().create_prediction(
+    # Preserve the original dedicated audit for backward compatibility with
+    # the existing dashboard panel.
+    old_saved = get_cold20_forward_audit().create_prediction(
         symbol=symbol,
         barrier=barrier,
         source_epoch=source_tick["epoch"],
@@ -149,6 +163,74 @@ def _record_cold20_candidate(result: dict, source_tick: dict) -> bool:
         historical_differ_rate_pct=cold20.get("historical_differ_rate_pct"),
         proposal_quote=proposal_quote,
     )
+
+    general_saved = get_strategy_forward_audit().create_prediction(
+        symbol=symbol,
+        strategy="COLD_20_DIFFERS",
+        barrier=barrier,
+        source_epoch=source_tick["epoch"],
+        source_quote=source_tick["quote"],
+        historical_rate_pct=cold20.get("historical_differ_rate_pct"),
+        proposal_quote=proposal_quote,
+    )
+    return old_saved or general_saved
+
+
+def _record_match_strategy(
+    *,
+    symbol: str,
+    strategy: str,
+    report: dict,
+    source_tick: dict,
+    historical_rate_pct=None,
+) -> bool:
+    barrier = _ready_digit(report)
+    if barrier is None:
+        return False
+
+    return get_strategy_forward_audit().create_prediction(
+        symbol=symbol,
+        strategy=strategy,
+        barrier=barrier,
+        source_epoch=source_tick["epoch"],
+        source_quote=source_tick["quote"],
+        historical_rate_pct=(
+            historical_rate_pct
+            if historical_rate_pct is not None
+            else report.get("frequency_pct")
+        ),
+        proposal_quote=get_cached_match_quote(symbol, barrier),
+    )
+
+
+def _record_independent_strategies(result: dict, source_tick: dict) -> None:
+    metadata = result.get("model_metadata") or {}
+    symbol = result.get("symbol")
+    if not symbol:
+        return
+
+    hot = metadata.get("hot_1000_continuation") or {}
+    _record_match_strategy(
+        symbol=symbol,
+        strategy="HOT_1000_MATCH",
+        report=hot,
+        source_tick=source_tick,
+        historical_rate_pct=hot.get("frequency_pct"),
+    )
+
+    cold = metadata.get("cold_reversion") or {}
+    windows = cold.get("windows") or {}
+    for window in (200, 500, 1000):
+        report = windows.get(window) or windows.get(str(window)) or {}
+        _record_match_strategy(
+            symbol=symbol,
+            strategy=f"COLD_{window}_MATCH",
+            report=report,
+            source_tick=source_tick,
+            historical_rate_pct=report.get("frequency_pct"),
+        )
+
+    _record_cold20_candidate(result, source_tick)
 
 
 async def _shadow_learning_loop(
@@ -160,7 +242,6 @@ async def _shadow_learning_loop(
     worker_executor,
     generation,
 ):
-    """Record prospective research candidates without weakening production."""
     while True:
         await asyncio.sleep(max(2.0, float(base.SCAN_INTERVAL)))
 
@@ -201,31 +282,23 @@ async def _shadow_learning_loop(
             ):
                 continue
 
-            # COLD20 is intentionally independent of the ensemble candidate,
-            # active-model count, market quality, and production thresholds.
-            # Its own database permits one pending next-tick record per symbol.
-            _record_cold20_candidate(result, source_tick)
+            # Independent strategies are intentionally allowed to collect even
+            # when the ensemble candidate fails production/shadow thresholds.
+            _record_independent_strategies(result, source_tick)
 
             candidate = result.get("candidate")
             if candidate is None:
                 continue
 
-            market_quality = str(
-                result.get("market_quality") or "UNKNOWN"
-            )
+            market_quality = str(result.get("market_quality") or "UNKNOWN")
             if market_quality not in {"LOW_SAMPLE", "TEN_DIGIT"}:
                 continue
 
-            # Existing ensemble shadow evidence remains separate.
             if learning.has_pending(symbol):
                 continue
 
-            model_predictions = dict(
-                result.get("model_predictions") or {}
-            )
-            model_weights = dict(
-                result.get("model_weights") or {}
-            )
+            model_predictions = dict(result.get("model_predictions") or {})
+            model_weights = dict(result.get("model_weights") or {})
             active_models = sum(
                 1
                 for model, prediction in model_predictions.items()
