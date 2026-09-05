@@ -132,7 +132,7 @@ class AdaptiveForwardEnsemble:
         if not symbol or not source_tick:
             return 0
         metadata = result.get("model_metadata") or {}
-        models = result.get("model_predictions") or {}
+        models = result.get("raw_model_predictions") or result.get("model_predictions") or {}
         probability = metadata.get("probability_analysis") or {}
         hot = metadata.get("hot_1000_continuation") or {}
         cold = metadata.get("cold_reversion") or {}
@@ -246,8 +246,6 @@ class AdaptiveForwardEnsemble:
             and recent_lower > BASELINE_PCT
         )
 
-        # Weight is earned only from statistically supported forward edge.
-        # Recent evidence receives more influence, but never bypasses eligibility.
         edge_lifetime = max(0.0, accuracy - BASELINE_PCT)
         edge_recent = max(0.0, recent_accuracy - BASELINE_PCT)
         evidence_weight = (0.35 * edge_lifetime + 0.65 * edge_recent) if eligible else 0.0
@@ -275,11 +273,10 @@ class AdaptiveForwardEnsemble:
         rows = [self.statistics(symbol, model) for model in MODEL_KEYS]
         total = sum(row["raw_evidence_weight"] for row in rows)
         for row in rows:
-            row["adaptive_weight_pct"] = round(
-                row["raw_evidence_weight"] / total * 100.0, 2
-                if total > 0 else 0.0,
-                2,
-            ) if total > 0 else 0.0
+            row["adaptive_weight_pct"] = (
+                round(row["raw_evidence_weight"] / total * 100.0, 2)
+                if total > 0 else 0.0
+            )
         return {
             "symbol": str(symbol),
             "scope": "RESEARCH_ONLY_UNTIL_VERIFIED",
@@ -318,8 +315,6 @@ class AdaptiveForwardEnsemble:
         support = supporters.get(winner, [])
         share = winner_weight / total_weight * 100.0 if total_weight else 0.0
 
-        # Two independently audited eligible models must agree before this
-        # adaptive candidate may replace the legacy research candidate.
         verified_for_use = len(support) >= 2 and share >= 60.0
         return {
             "candidate": winner if verified_for_use else None,
