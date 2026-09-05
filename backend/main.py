@@ -72,6 +72,19 @@ except Exception:
         return []
 
 try:
+    from backend.core.adaptive_forward_ensemble import (
+        MODEL_KEYS as ADAPTIVE_MODEL_KEYS,
+        get_adaptive_forward_ensemble,
+    )
+    adaptive_forward_ensemble_loaded = True
+except Exception:
+    ADAPTIVE_MODEL_KEYS = ()
+    adaptive_forward_ensemble_loaded = False
+
+    def get_adaptive_forward_ensemble():
+        return None
+
+try:
     from backend.core.all_volatility_web_runner import run_forever
 except Exception:
     run_forever = None
@@ -143,6 +156,7 @@ async def health():
         "proposal_quotes_loaded": run_proposal_quote_loop is not None,
         "precision_runtime_loaded": precision_runtime_loaded,
         "strategy_forward_audit_loaded": strategy_forward_audit_loaded,
+        "adaptive_forward_ensemble_loaded": adaptive_forward_ensemble_loaded,
         "precision_tracked_markets": precision.get("tracked_markets", 0),
         "precision_healthy_markets": precision.get("healthy_markets", 0),
         "precision_waiting_markets": precision.get("waiting_markets", 0),
@@ -165,6 +179,7 @@ async def runtime_health():
     return {
         "build_revision": BUILD_REVISION,
         "precision_runtime_loaded": precision_runtime_loaded,
+        "adaptive_forward_ensemble_loaded": adaptive_forward_ensemble_loaded,
         "market_count": current.get("market_count", 0),
         "live_market_count": current.get("live_market_count", 0),
         **precision,
@@ -187,6 +202,48 @@ async def strategy_comparison(symbol: str | None = None):
         "symbol": symbol or "ALL",
         "count": len(rows),
         "strategies": rows,
+    }
+
+
+@app.get("/api/adaptive-forward-results")
+async def adaptive_forward_results(symbol: str | None = None):
+    """Prospective per-market model accuracy and evidence weights."""
+    if not adaptive_forward_ensemble_loaded:
+        return {
+            "build_revision": BUILD_REVISION,
+            "loaded": False,
+            "scope": "RESEARCH_ONLY",
+            "symbol": symbol or "ALL",
+            "markets": [],
+        }
+
+    audit = get_adaptive_forward_ensemble()
+    if audit is None:
+        return {
+            "build_revision": BUILD_REVISION,
+            "loaded": False,
+            "scope": "RESEARCH_ONLY",
+            "symbol": symbol or "ALL",
+            "markets": [],
+        }
+
+    if symbol:
+        snapshots = [audit.snapshot(symbol)]
+    else:
+        current = get_markets()
+        symbols = sorted(current.keys())
+        snapshots = [audit.snapshot(item) for item in symbols]
+
+    return {
+        "build_revision": BUILD_REVISION,
+        "loaded": True,
+        "scope": "RESEARCH_ONLY_UNTIL_VERIFIED",
+        "baseline_pct": 10.0,
+        "required_resolved_per_model": 100,
+        "models": list(ADAPTIVE_MODEL_KEYS),
+        "symbol": symbol or "ALL",
+        "market_count": len(snapshots),
+        "markets": snapshots,
     }
 
 
