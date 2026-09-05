@@ -5,14 +5,16 @@ This wrapper keeps production publication unchanged while recording one
 non-trading next-tick ensemble SHADOW candidate per eligible Volatility market.
 
 Independent strategy audits are isolated from adaptive production model memory.
-They record HOT1000 MATCH, COLD200/500/1000 MATCH, and COLD20 DIFFERS candidates
-before the resolving tick so their actual forward performance can be compared.
+They record HOT1000 MATCH, COLD200/500/1000 MATCH, COLD20 DIFFERS candidates,
+and per-model adaptive forward candidates before the resolving tick so actual
+next-tick performance can be compared honestly.
 """
 
 from __future__ import annotations
 
 import asyncio
 
+from backend.core.adaptive_forward_ensemble import get_adaptive_forward_ensemble
 from backend.core.cold20_forward_audit import get_cold20_forward_audit
 from backend.core.filtered_strategy_collector import record_filtered_cold1000
 from backend.core.market_family import attach_family_metadata
@@ -27,13 +29,14 @@ _ORIGINAL_SCAN_LOOP = None
 
 
 def _install_research_resolver(learning) -> None:
-    """Resolve independent research audits from the same accepted next tick."""
+    """Resolve all isolated research audits from the same accepted next tick."""
     if getattr(learning, "_DSNPFX_RESEARCH_RESOLVER_INSTALLED", False):
         return
 
     original_resolve = learning.resolve
     cold20_audit = get_cold20_forward_audit()
     strategy_audit = get_strategy_forward_audit()
+    adaptive_audit = get_adaptive_forward_ensemble()
 
     def resolve_with_research(
         symbol: str,
@@ -41,8 +44,8 @@ def _install_research_resolver(learning) -> None:
         tick_epoch: int,
         tick_quote,
     ):
-        # These isolated research tables never alter model weights or the
-        # production prediction table.
+        # These isolated research tables never alter production publication or
+        # adaptive production model memory.
         cold20_audit.resolve(
             symbol,
             actual,
@@ -50,6 +53,12 @@ def _install_research_resolver(learning) -> None:
             tick_quote=tick_quote,
         )
         strategy_audit.resolve(
+            symbol,
+            actual,
+            tick_epoch=tick_epoch,
+            tick_quote=tick_quote,
+        )
+        adaptive_audit.resolve(
             symbol,
             actual,
             tick_epoch=tick_epoch,
@@ -153,8 +162,6 @@ def _record_cold20_candidate(result: dict, source_tick: dict) -> bool:
     symbol = result.get("symbol")
     proposal_quote = get_cached_differ_quote(symbol, barrier)
 
-    # Preserve the original dedicated audit for backward compatibility with
-    # the existing dashboard panel.
     old_saved = get_cold20_forward_audit().create_prediction(
         symbol=symbol,
         barrier=barrier,
@@ -232,11 +239,12 @@ def _record_independent_strategies(result: dict, source_tick: dict) -> None:
         )
 
     _record_cold20_candidate(result, source_tick)
-
-    # Filtered variants remain research-only. They are recorded independently
-    # so we can test whether selective agreement improves economics over the
-    # unfiltered COLD1000 strategy without changing production behavior.
     record_filtered_cold1000(result, source_tick)
+
+    # Record every available research model independently before the next tick.
+    # This audit remains isolated from production until its statistical gates
+    # prove an edge over the 10% exact-digit baseline.
+    get_adaptive_forward_ensemble().create_from_result(result, source_tick)
 
 
 async def _shadow_learning_loop(
@@ -288,8 +296,6 @@ async def _shadow_learning_loop(
             ):
                 continue
 
-            # Independent strategies are intentionally allowed to collect even
-            # when the ensemble candidate fails production/shadow thresholds.
             _record_independent_strategies(result, source_tick)
 
             candidate = result.get("candidate")
