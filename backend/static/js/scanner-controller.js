@@ -1,19 +1,43 @@
 (() => {
   "use strict";
 
-  // Single active scanner controller for Market Insight.
-  // It replaces dashboard.js's original updateScanner binding before async
-  // state/websocket payloads are rendered. Production verification remains
-  // authoritative: only verified markets can display Match Found.
+  // Single scanner owner for Market Insight.
+  // Production verification remains authoritative. Research candidates are
+  // clearly labelled and can never be shown as Match Found.
   const SCAN_MS = 2200;
   const REVEAL_MS = 1100;
   const CARD_STAGGER_MS = 70;
+  const ROTATION_MS = 1350;
 
   function getCandidate(market) {
     const value = market?.candidate_prediction;
     return Number.isInteger(Number(value)) && Number(value) >= 0 && Number(value) <= 9
       ? String(Number(value))
       : null;
+  }
+
+  function animateScannerSweeps(now) {
+    const cards = document.querySelectorAll("#marketStack .market-card");
+    const baseAngle = ((now % ROTATION_MS) / ROTATION_MS) * 360;
+
+    cards.forEach((card, index) => {
+      if (card.classList.contains("signal") && card.classList.contains("revealed")) return;
+
+      const sweep = card.querySelector(".scanner-sweep");
+      const orb = card.querySelector(".scanner-orb");
+      if (sweep) {
+        // JS drives the visible sweep directly. Do not rely on CSS animation.
+        sweep.style.animation = "none";
+        sweep.style.transform = `rotate(${baseAngle + index * 11}deg)`;
+        sweep.style.opacity = card.classList.contains("revealed") ? "0.28" : "0.92";
+      }
+      if (orb && !card.classList.contains("revealed")) {
+        const pulse = 0.17 + (Math.sin(now / 260 + index * 0.4) + 1) * 0.09;
+        orb.style.boxShadow = `inset 0 0 30px rgba(33,243,138,.12),0 0 38px rgba(33,243,138,${pulse.toFixed(3)})`;
+      }
+    });
+
+    window.requestAnimationFrame(animateScannerSweeps);
   }
 
   function beginScan(card, market, verified) {
@@ -24,6 +48,8 @@
 
     clearTimeout(card._scanRevealTimer);
     clearTimeout(card._scanRestartTimer);
+    card._scanRevealTimer = null;
+    card._scanRestartTimer = null;
     card.classList.remove("revealed");
 
     if (digit) digit.textContent = "--";
@@ -35,6 +61,7 @@
     const delay = SCAN_MS + index * CARD_STAGGER_MS;
 
     card._scanRevealTimer = window.setTimeout(() => {
+      card._scanRevealTimer = null;
       card.classList.add("revealed");
 
       if (verified) {
@@ -45,7 +72,8 @@
         return;
       }
 
-      const candidate = getCandidate(market);
+      const latest = latestMarkets?.[card.dataset.symbol] || market || {};
+      const candidate = getCandidate(latest);
       if (candidate !== null) {
         if (digit) digit.textContent = candidate;
         if (label) label.textContent = "CANDIDATE";
@@ -54,31 +82,28 @@
       } else {
         if (digit) digit.textContent = "--";
         if (label) label.textContent = "WAIT";
-        if (status) status.textContent = Number(market?.rolling_samples || 0) < PRODUCTION_THRESHOLDS.samples
-          ? "Learning"
-          : "No Verified Match";
-        if (note) note.textContent = evidenceNote(market, false);
+        if (status) status.textContent = "No candidate yet";
+        if (note) note.textContent = "Collecting live evidence · rescanning";
       }
 
       card._scanRestartTimer = window.setTimeout(() => {
-        const latest = latestMarkets?.[card.dataset.symbol] || market || {};
-        const latestVerified = Boolean(
-          latest?.is_premium
-          && latest?.published_prediction !== null
-          && latest?.published_prediction !== undefined
+        card._scanRestartTimer = null;
+        const newest = latestMarkets?.[card.dataset.symbol] || latest || {};
+        const newestVerified = Boolean(
+          newest?.is_premium
+          && newest?.published_prediction !== null
+          && newest?.published_prediction !== undefined
         );
-        beginScan(card, latest, latestVerified);
+        beginScan(card, newest, newestVerified);
       }, REVEAL_MS);
     }, delay);
   }
 
-  // Replace the original dashboard scanner function with one controller.
+  // Replace dashboard.js scanner binding with this one scanner controller.
   updateScanner = function updateScannerSingle(card, market, verified) {
     const signature = scannerSignature(market, verified);
 
     if (verified) {
-      // Restart only when the verified payload changes; otherwise keep the
-      // verified result stable on screen.
       if (card._scannerSignature === signature && card.classList.contains("revealed")) {
         const note = card.querySelector(".scanner-note");
         if (note) note.textContent = evidenceNote(market, true);
@@ -89,11 +114,11 @@
       return;
     }
 
-    // For unverified markets the scanner intentionally cycles forever, using
-    // the newest market snapshot whenever each cycle restarts.
     card._scannerSignature = signature;
     if (!card._scanRevealTimer && !card._scanRestartTimer) {
       beginScan(card, market, false);
     }
   };
+
+  window.requestAnimationFrame(animateScannerSweeps);
 })();
