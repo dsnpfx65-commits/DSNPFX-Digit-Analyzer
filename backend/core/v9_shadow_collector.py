@@ -4,15 +4,14 @@ The production scanner historically allowed only one global pending prediction.
 This wrapper keeps production publication unchanged while recording one
 non-trading next-tick ensemble SHADOW candidate per eligible Volatility market.
 
-Independent strategy audits are isolated from adaptive production model memory.
-They record HOT1000 MATCH, COLD200/500/1000 MATCH, COLD20 DIFFERS candidates,
-Scribd MATCH rule candidates, and per-model adaptive forward candidates before
-the resolving tick so actual next-tick performance can be compared honestly.
+Research collectors are deliberately isolated from the production scanner:
+collector/database/telemetry failures must never stop live market scanning.
 """
 
 from __future__ import annotations
 
 import asyncio
+import traceback
 
 from backend.core.adaptive_forward_ensemble import get_adaptive_forward_ensemble
 from backend.core.cold20_forward_audit import get_cold20_forward_audit
@@ -29,8 +28,12 @@ from backend.core.strategy_forward_audit import get_strategy_forward_audit
 _ORIGINAL_SCAN_LOOP = None
 
 
+def _research_error(label: str, error: Exception) -> None:
+    print(f"DSNPFX RESEARCH WARNING [{label}]: {type(error).__name__}: {error}")
+
+
 def _install_research_resolver(learning) -> None:
-    """Resolve all isolated research audits from the same accepted next tick."""
+    """Resolve isolated audits without allowing research failures to block ticks."""
     if getattr(learning, "_DSNPFX_RESEARCH_RESOLVER_INSTALLED", False):
         return
 
@@ -45,26 +48,38 @@ def _install_research_resolver(learning) -> None:
         tick_epoch: int,
         tick_quote,
     ):
-        # These isolated research tables never alter production publication or
-        # adaptive production model memory.
-        cold20_audit.resolve(
-            symbol,
-            actual,
-            tick_epoch=tick_epoch,
-            tick_quote=tick_quote,
-        )
-        strategy_audit.resolve(
-            symbol,
-            actual,
-            tick_epoch=tick_epoch,
-            tick_quote=tick_quote,
-        )
-        adaptive_audit.resolve(
-            symbol,
-            actual,
-            tick_epoch=tick_epoch,
-            tick_quote=tick_quote,
-        )
+        # Every research resolver is best-effort. Production learning always
+        # receives the accepted tick even if an audit database is unavailable.
+        try:
+            cold20_audit.resolve(
+                symbol,
+                actual,
+                tick_epoch=tick_epoch,
+                tick_quote=tick_quote,
+            )
+        except Exception as error:
+            _research_error("cold20-resolve", error)
+
+        try:
+            strategy_audit.resolve(
+                symbol,
+                actual,
+                tick_epoch=tick_epoch,
+                tick_quote=tick_quote,
+            )
+        except Exception as error:
+            _research_error("strategy-resolve", error)
+
+        try:
+            adaptive_audit.resolve(
+                symbol,
+                actual,
+                tick_epoch=tick_epoch,
+                tick_quote=tick_quote,
+            )
+        except Exception as error:
+            _research_error("adaptive-resolve", error)
+
         return original_resolve(
             symbol,
             actual,
@@ -109,7 +124,7 @@ def install(base_module):
         )
 
         shadow_task = asyncio.create_task(
-            _shadow_learning_loop(
+            _shadow_learning_supervisor(
                 base_module,
                 ai,
                 learning,
@@ -121,22 +136,13 @@ def install(base_module):
             name=f"dsnpfx-v9-shadow-{generation}",
         )
 
-        done, pending = await asyncio.wait(
-            {production_task, shadow_task},
-            return_when=asyncio.FIRST_EXCEPTION,
-        )
-
-        for task in pending:
-            task.cancel()
-
-        await asyncio.gather(*pending, return_exceptions=True)
-
-        for task in done:
-            if task.cancelled():
-                continue
-            exception = task.exception()
-            if exception is not None:
-                raise exception
+        # Production is authoritative. A research task failure is contained by
+        # its supervisor and must not cancel live scanning.
+        try:
+            await production_task
+        finally:
+            shadow_task.cancel()
+            await asyncio.gather(shadow_task, return_exceptions=True)
 
     base_module._scan_loop = wrapped_scan_loop
     base_module._DSNPFX_V9_SHADOW_INSTALLED = True
@@ -218,43 +224,85 @@ def _record_independent_strategies(ai, result: dict, source_tick: dict) -> None:
     if not symbol:
         return
 
-    hot = metadata.get("hot_1000_continuation") or {}
-    _record_match_strategy(
-        symbol=symbol,
-        strategy="HOT_1000_MATCH",
-        report=hot,
-        source_tick=source_tick,
-        historical_rate_pct=hot.get("frequency_pct"),
-    )
-
-    cold = metadata.get("cold_reversion") or {}
-    windows = cold.get("windows") or {}
-    for window in (200, 500, 1000):
-        report = windows.get(window) or windows.get(str(window)) or {}
+    # Isolate each collector independently so one research experiment cannot
+    # suppress the others or affect production scanning.
+    try:
+        hot = metadata.get("hot_1000_continuation") or {}
         _record_match_strategy(
             symbol=symbol,
-            strategy=f"COLD_{window}_MATCH",
-            report=report,
+            strategy="HOT_1000_MATCH",
+            report=hot,
             source_tick=source_tick,
-            historical_rate_pct=report.get("frequency_pct"),
+            historical_rate_pct=hot.get("frequency_pct"),
         )
 
-    _record_cold20_candidate(result, source_tick)
-    record_filtered_cold1000(result, source_tick)
+        cold = metadata.get("cold_reversion") or {}
+        windows = cold.get("windows") or {}
+        for window in (200, 500, 1000):
+            report = windows.get(window) or windows.get(str(window)) or {}
+            _record_match_strategy(
+                symbol=symbol,
+                strategy=f"COLD_{window}_MATCH",
+                report=report,
+                source_tick=source_tick,
+                historical_rate_pct=report.get("frequency_pct"),
+            )
+    except Exception as error:
+        _research_error(f"strategy-record:{symbol}", error)
 
-    # The Scribd hypothesis needs actual digit history to reproduce its
-    # percentage, trend/stability, and cursor rules. Reuse the live market
-    # engine's bounded history instead of maintaining a second tick buffer.
-    record_scribd_match(
-        symbol=symbol,
-        digits=ai.market_engine.history(symbol),
-        source_tick=source_tick,
-    )
+    try:
+        _record_cold20_candidate(result, source_tick)
+    except Exception as error:
+        _research_error(f"cold20-record:{symbol}", error)
 
-    # Record every available research model independently before the next tick.
-    # This audit remains isolated from production until its statistical gates
-    # prove an edge over the 10% exact-digit baseline.
-    get_adaptive_forward_ensemble().create_from_result(result, source_tick)
+    try:
+        record_filtered_cold1000(result, source_tick)
+    except Exception as error:
+        _research_error(f"filtered-cold1000:{symbol}", error)
+
+    try:
+        record_scribd_match(
+            symbol=symbol,
+            digits=ai.market_engine.history(symbol),
+            source_tick=source_tick,
+        )
+    except Exception as error:
+        _research_error(f"scribd-match:{symbol}", error)
+
+    try:
+        get_adaptive_forward_ensemble().create_from_result(result, source_tick)
+    except Exception as error:
+        _research_error(f"adaptive-forward:{symbol}", error)
+
+
+async def _shadow_learning_supervisor(
+    base,
+    ai,
+    learning,
+    latest_ticks,
+    quality_gate,
+    worker_executor,
+    generation,
+):
+    """Restart the research loop after unexpected research-only failures."""
+    while base._generation_is_current(generation):
+        try:
+            await _shadow_learning_loop(
+                base,
+                ai,
+                learning,
+                latest_ticks,
+                quality_gate,
+                worker_executor,
+                generation,
+            )
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _research_error("shadow-loop", error)
+            traceback.print_exc()
+            await asyncio.sleep(max(2.0, float(base.SCAN_INTERVAL)))
 
 
 async def _shadow_learning_loop(
@@ -355,13 +403,15 @@ async def _shadow_learning_loop(
                 "source_quote": source_tick["quote"],
             }
 
-            saved = learning.create_prediction(record)
-            if not saved:
-                continue
-
-            learning.tag_pending_prediction(
-                symbol,
-                selection_mode="SHADOW",
-                market_family=result.get("market_family", "UNKNOWN"),
-                market_quality=market_quality,
-            )
+            try:
+                saved = learning.create_prediction(record)
+                if not saved:
+                    continue
+                learning.tag_pending_prediction(
+                    symbol,
+                    selection_mode="SHADOW",
+                    market_family=result.get("market_family", "UNKNOWN"),
+                    market_quality=market_quality,
+                )
+            except Exception as error:
+                _research_error(f"shadow-learning:{symbol}", error)
