@@ -1,12 +1,14 @@
 """Prospective per-market model audit and adaptive research ensemble.
 
-This module records each candidate *before* the resolving next tick, measures
-forward accuracy independently per market/model, and derives evidence-based
-weights. It is intentionally isolated from production model memory.
+Predictions are recorded before the resolving next tick. Statistical evidence
+and trading economics are deliberately separated:
 
-A model becomes eligible for adaptive ensemble influence only after at least
-100 resolved forward samples and when its 95% Wilson lower bound is above the
-10% exact-digit baseline. Until then it receives zero production influence.
+- statistical_eligible: 95% Wilson lower bound clears the 10% digit baseline;
+- tradable_eligible: the same lower bound also clears the average live Deriv
+  DIGITMATCH break-even recorded for those predictions.
+
+Only tradable-eligible models earn adaptive ensemble weight. This remains
+research-only and never bypasses the production evidence gate.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from math import sqrt
 from pathlib import Path
 import sqlite3
 from threading import RLock
+
+from backend.core.proposal_quote_service import get_cached_match_quote
 
 
 BASELINE_PCT = 10.0
@@ -55,6 +59,7 @@ class AdaptiveForwardEnsemble:
                     prediction INTEGER NOT NULL,
                     source_epoch INTEGER NOT NULL,
                     source_quote TEXT NOT NULL,
+                    break_even_probability_pct REAL,
                     actual INTEGER,
                     resolved_epoch INTEGER,
                     resolved_quote TEXT,
@@ -62,6 +67,17 @@ class AdaptiveForwardEnsemble:
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in self.connection.execute(
+                    "PRAGMA table_info(adaptive_forward_predictions)"
+                ).fetchall()
+            }
+            if "break_even_probability_pct" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE adaptive_forward_predictions "
+                    "ADD COLUMN break_even_probability_pct REAL"
+                )
             self.connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_adaptive_pending
@@ -86,6 +102,14 @@ class AdaptiveForwardEnsemble:
         return digit if 0 <= digit <= 9 else None
 
     @staticmethod
+    def _optional_float(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0.0 else None
+
+    @staticmethod
     def _wilson(wins: int, total: int) -> tuple[float, float]:
         if total <= 0:
             return 0.0, 0.0
@@ -93,10 +117,24 @@ class AdaptiveForwardEnsemble:
         z2 = Z_95 * Z_95
         denominator = 1.0 + z2 / total
         center = (p + z2 / (2.0 * total)) / denominator
-        margin = Z_95 * sqrt((p * (1.0 - p) + z2 / (4.0 * total)) / total) / denominator
-        return max(0.0, center - margin) * 100.0, min(1.0, center + margin) * 100.0
+        margin = Z_95 * sqrt(
+            (p * (1.0 - p) + z2 / (4.0 * total)) / total
+        ) / denominator
+        return (
+            max(0.0, center - margin) * 100.0,
+            min(1.0, center + margin) * 100.0,
+        )
 
-    def create_prediction(self, *, symbol: str, model: str, prediction, source_epoch: int, source_quote) -> bool:
+    def create_prediction(
+        self,
+        *,
+        symbol: str,
+        model: str,
+        prediction,
+        source_epoch: int,
+        source_quote,
+        break_even_probability_pct=None,
+    ) -> bool:
         model = str(model or "").strip().lower()
         if model not in MODEL_KEYS:
             return False
@@ -107,11 +145,15 @@ class AdaptiveForwardEnsemble:
             source_epoch = int(source_epoch)
         except (TypeError, ValueError):
             return False
+        break_even = self._optional_float(break_even_probability_pct)
 
         with self.lock:
             existing = self.connection.execute(
-                """SELECT id FROM adaptive_forward_predictions
-                   WHERE symbol=? AND model=? AND result IS NULL LIMIT 1""",
+                """
+                SELECT id FROM adaptive_forward_predictions
+                WHERE symbol=? AND model=? AND result IS NULL
+                LIMIT 1
+                """,
                 (str(symbol), model),
             ).fetchone()
             if existing is not None:
@@ -119,10 +161,19 @@ class AdaptiveForwardEnsemble:
             self.connection.execute(
                 """
                 INSERT INTO adaptive_forward_predictions(
-                    created_at,symbol,model,prediction,source_epoch,source_quote
-                ) VALUES(?,?,?,?,?,?)
+                    created_at, symbol, model, prediction, source_epoch,
+                    source_quote, break_even_probability_pct
+                ) VALUES(?,?,?,?,?,?,?)
                 """,
-                (datetime.now().isoformat(), str(symbol), model, digit, source_epoch, str(source_quote)),
+                (
+                    datetime.now().isoformat(),
+                    str(symbol),
+                    model,
+                    digit,
+                    source_epoch,
+                    str(source_quote),
+                    break_even,
+                ),
             )
             self.connection.commit()
         return True
@@ -131,6 +182,7 @@ class AdaptiveForwardEnsemble:
         symbol = result.get("symbol")
         if not symbol or not source_tick:
             return 0
+
         metadata = result.get("model_metadata") or {}
         models = result.get("raw_model_predictions") or result.get("model_predictions") or {}
         probability = metadata.get("probability_analysis") or {}
@@ -144,7 +196,11 @@ class AdaptiveForwardEnsemble:
             "markov": models.get("markov"),
             "sequence": models.get("sequence"),
             "probability_best": probability.get("best_match_digit"),
-            "hot_1000": hot.get("candidate") if str(hot.get("status", "")).upper() == "READY" else None,
+            "hot_1000": (
+                hot.get("candidate")
+                if str(hot.get("status", "")).upper() == "READY"
+                else None
+            ),
             "cold_1000": (
                 cold1000.get("candidate")
                 if str(cold1000.get("status", "")).upper() == "READY"
@@ -154,16 +210,33 @@ class AdaptiveForwardEnsemble:
 
         saved = 0
         for model, prediction in candidates.items():
-            saved += int(self.create_prediction(
-                symbol=symbol,
-                model=model,
-                prediction=prediction,
-                source_epoch=source_tick["epoch"],
-                source_quote=source_tick["quote"],
-            ))
+            digit = self._valid_digit(prediction)
+            quote = get_cached_match_quote(symbol, digit) if digit is not None else None
+            break_even = (
+                quote.get("break_even_probability_pct")
+                if isinstance(quote, dict)
+                else None
+            )
+            saved += int(
+                self.create_prediction(
+                    symbol=symbol,
+                    model=model,
+                    prediction=digit,
+                    source_epoch=source_tick["epoch"],
+                    source_quote=source_tick["quote"],
+                    break_even_probability_pct=break_even,
+                )
+            )
         return saved
 
-    def resolve(self, symbol: str, actual: int, *, tick_epoch: int, tick_quote) -> list[dict]:
+    def resolve(
+        self,
+        symbol: str,
+        actual: int,
+        *,
+        tick_epoch: int,
+        tick_quote,
+    ) -> list[dict]:
         actual_digit = self._valid_digit(actual)
         if actual_digit is None:
             return []
@@ -183,23 +256,33 @@ class AdaptiveForwardEnsemble:
             ).fetchall()
             resolved = []
             for row in rows:
-                result = "WIN" if int(row["prediction"]) == actual_digit else "LOSS"
+                outcome = "WIN" if int(row["prediction"]) == actual_digit else "LOSS"
                 self.connection.execute(
                     """
                     UPDATE adaptive_forward_predictions
-                    SET resolved_at=?, actual=?, resolved_epoch=?, resolved_quote=?, result=?
+                    SET resolved_at=?, actual=?, resolved_epoch=?,
+                        resolved_quote=?, result=?
                     WHERE id=?
                     """,
-                    (datetime.now().isoformat(), actual_digit, tick_epoch, str(tick_quote), result, int(row["id"])),
+                    (
+                        datetime.now().isoformat(),
+                        actual_digit,
+                        tick_epoch,
+                        str(tick_quote),
+                        outcome,
+                        int(row["id"]),
+                    ),
                 )
-                resolved.append({
-                    "id": int(row["id"]),
-                    "symbol": str(symbol),
-                    "model": str(row["model"]),
-                    "prediction": int(row["prediction"]),
-                    "actual": actual_digit,
-                    "result": result,
-                })
+                resolved.append(
+                    {
+                        "id": int(row["id"]),
+                        "symbol": str(symbol),
+                        "model": str(row["model"]),
+                        "prediction": int(row["prediction"]),
+                        "actual": actual_digit,
+                        "result": outcome,
+                    }
+                )
             if rows:
                 self.connection.commit()
         return resolved
@@ -213,8 +296,11 @@ class AdaptiveForwardEnsemble:
         with self.lock:
             lifetime = self.connection.execute(
                 """
-                SELECT COUNT(*) resolved,
-                       SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) wins
+                SELECT
+                    COUNT(*) AS resolved,
+                    SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) AS wins,
+                    COUNT(break_even_probability_pct) AS priced_samples,
+                    AVG(break_even_probability_pct) AS average_break_even_pct
                 FROM adaptive_forward_predictions
                 WHERE symbol=? AND model=? AND result IN ('WIN','LOSS')
                 """,
@@ -222,7 +308,8 @@ class AdaptiveForwardEnsemble:
             ).fetchone()
             recent_rows = self.connection.execute(
                 """
-                SELECT result FROM adaptive_forward_predictions
+                SELECT result, break_even_probability_pct
+                FROM adaptive_forward_predictions
                 WHERE symbol=? AND model=? AND result IN ('WIN','LOSS')
                 ORDER BY id DESC LIMIT ?
                 """,
@@ -234,21 +321,63 @@ class AdaptiveForwardEnsemble:
         accuracy = wins / resolved * 100.0 if resolved else 0.0
         lower, upper = self._wilson(wins, resolved)
 
+        priced_samples = int(lifetime["priced_samples"] or 0)
+        average_break_even = self._optional_float(lifetime["average_break_even_pct"])
+
         recent_n = len(recent_rows)
         recent_wins = sum(row["result"] == "WIN" for row in recent_rows)
         recent_accuracy = recent_wins / recent_n * 100.0 if recent_n else 0.0
         recent_lower, recent_upper = self._wilson(recent_wins, recent_n)
+        recent_prices = [
+            float(row["break_even_probability_pct"])
+            for row in recent_rows
+            if row["break_even_probability_pct"] is not None
+        ]
+        recent_average_break_even = (
+            sum(recent_prices) / len(recent_prices) if recent_prices else None
+        )
 
-        eligible = bool(
+        statistical_eligible = bool(
             resolved >= 100
-            and lower > BASELINE_PCT
             and recent_n >= 100
+            and lower > BASELINE_PCT
             and recent_lower > BASELINE_PCT
         )
 
-        edge_lifetime = max(0.0, accuracy - BASELINE_PCT)
-        edge_recent = max(0.0, recent_accuracy - BASELINE_PCT)
-        evidence_weight = (0.35 * edge_lifetime + 0.65 * edge_recent) if eligible else 0.0
+        # Trading eligibility is stricter than statistical significance. We
+        # require enough priced observations and both lifetime/recent lower
+        # confidence bounds to clear their recorded DIGITMATCH break-even.
+        tradable_eligible = bool(
+            statistical_eligible
+            and priced_samples >= 100
+            and len(recent_prices) >= 100
+            and average_break_even is not None
+            and recent_average_break_even is not None
+            and lower > average_break_even
+            and recent_lower > recent_average_break_even
+        )
+
+        lifetime_edge_vs_break_even = (
+            accuracy - average_break_even
+            if average_break_even is not None
+            else None
+        )
+        recent_edge_vs_break_even = (
+            recent_accuracy - recent_average_break_even
+            if recent_average_break_even is not None
+            else None
+        )
+
+        # Adaptive influence is based only on conservative economic edge.
+        if tradable_eligible:
+            lifetime_conservative_edge = max(0.0, lower - average_break_even)
+            recent_conservative_edge = max(0.0, recent_lower - recent_average_break_even)
+            evidence_weight = (
+                0.35 * lifetime_conservative_edge
+                + 0.65 * recent_conservative_edge
+            )
+        else:
+            evidence_weight = 0.0
 
         return {
             "symbol": str(symbol),
@@ -265,7 +394,32 @@ class AdaptiveForwardEnsemble:
             "recent_lower_95_pct": round(recent_lower, 4),
             "recent_upper_95_pct": round(recent_upper, 4),
             "baseline_pct": BASELINE_PCT,
-            "eligible": eligible,
+            "priced_samples": priced_samples,
+            "average_break_even_pct": (
+                round(average_break_even, 4)
+                if average_break_even is not None
+                else None
+            ),
+            "recent_priced_samples": len(recent_prices),
+            "recent_average_break_even_pct": (
+                round(recent_average_break_even, 4)
+                if recent_average_break_even is not None
+                else None
+            ),
+            "edge_vs_break_even_pp": (
+                round(lifetime_edge_vs_break_even, 4)
+                if lifetime_edge_vs_break_even is not None
+                else None
+            ),
+            "recent_edge_vs_break_even_pp": (
+                round(recent_edge_vs_break_even, 4)
+                if recent_edge_vs_break_even is not None
+                else None
+            ),
+            "statistical_eligible": statistical_eligible,
+            "tradable_eligible": tradable_eligible,
+            # Backward-compatible field now intentionally means tradable.
+            "eligible": tradable_eligible,
             "raw_evidence_weight": round(evidence_weight, 6),
         }
 
@@ -275,14 +429,22 @@ class AdaptiveForwardEnsemble:
         for row in rows:
             row["adaptive_weight_pct"] = (
                 round(row["raw_evidence_weight"] / total * 100.0, 2)
-                if total > 0 else 0.0
+                if total > 0
+                else 0.0
             )
         return {
             "symbol": str(symbol),
             "scope": "RESEARCH_ONLY_UNTIL_VERIFIED",
             "baseline_pct": BASELINE_PCT,
             "models": rows,
-            "eligible_models": sum(bool(row["eligible"]) for row in rows),
+            "statistical_eligible_models": sum(
+                bool(row["statistical_eligible"]) for row in rows
+            ),
+            "tradable_eligible_models": sum(
+                bool(row["tradable_eligible"]) for row in rows
+            ),
+            # Backward-compatible summary now intentionally means tradable.
+            "eligible_models": sum(bool(row["tradable_eligible"]) for row in rows),
         }
 
     def choose(self, symbol: str, candidates: dict) -> dict:
@@ -295,7 +457,11 @@ class AdaptiveForwardEnsemble:
             digit = self._valid_digit(candidates.get(model))
             row = rows_by_model.get(model) or {}
             weight = float(row.get("adaptive_weight_pct", 0.0) or 0.0)
-            if digit is None or weight <= 0.0 or not row.get("eligible"):
+            if (
+                digit is None
+                or weight <= 0.0
+                or not row.get("tradable_eligible")
+            ):
                 continue
             votes[digit] = votes.get(digit, 0.0) + weight
             supporters.setdefault(digit, []).append(model)
@@ -315,6 +481,9 @@ class AdaptiveForwardEnsemble:
         support = supporters.get(winner, [])
         share = winner_weight / total_weight * 100.0 if total_weight else 0.0
 
+        # We still require agreement from at least two independently audited
+        # tradable-eligible models. One strong model remains research evidence,
+        # not an automatic production prediction.
         verified_for_use = len(support) >= 2 and share >= 60.0
         return {
             "candidate": winner if verified_for_use else None,
