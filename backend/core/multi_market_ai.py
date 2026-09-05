@@ -90,10 +90,6 @@ class MultiMarketAI:
                 for model in self.MODELS
             )
 
-            # Bootstrap solves the zero-evidence deadlock: equal default voting
-            # is allowed only to generate shadow-learning candidates. Edge and
-            # production gates still see zero historical evidence, so these
-            # candidates cannot become production signals prematurely.
             bootstrap_learning = earned_weight_total <= 0.0
             pipeline = DSPFXAIPipeline(
                 digits,
@@ -178,6 +174,12 @@ class MultiMarketAI:
                 "regime_confidence": regime["confidence"],
                 "stability_score": stability_score,
                 "model_predictions": active_predictions.copy(),
+                # Preserve every raw model candidate for isolated prospective
+                # auditing, even when a model currently has zero ensemble weight.
+                "raw_model_predictions": {
+                    model: raw_predictions.get(model)
+                    for model in self.MODELS
+                },
                 "model_weights": active_weights.copy(),
                 "model_statistics": model_statistics,
                 "model_metadata": result.get("model_metadata", {}),
