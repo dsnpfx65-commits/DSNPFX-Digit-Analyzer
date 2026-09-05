@@ -83,7 +83,7 @@
   }
 
   function updateCard(symbol, market) {
-    const card = cards?.get?.(symbol);
+    const card = typeof cards !== "undefined" ? cards.get(symbol) : null;
     if (!card) return;
     const panel = ensureCardPanel(card);
     if (!panel) return;
@@ -166,15 +166,26 @@
   }
 
   function refreshCards() {
-    if (!latestMarkets || typeof latestMarkets !== "object") return;
+    if (typeof latestMarkets === "undefined" || !latestMarkets || typeof latestMarkets !== "object") return;
     Object.entries(latestMarkets).forEach(([symbol, market]) => updateCard(symbol, market || {}));
+  }
+
+  // Use the same proven updateMarket hook pattern as the working proposal UI.
+  // This guarantees comparison values are refreshed on the exact market payload
+  // that updates the rest of the card, instead of depending only on polling.
+  if (typeof updateMarket === "function") {
+    const originalUpdateMarket = updateMarket;
+    updateMarket = function comparisonAwareUpdateMarket(symbol, market) {
+      originalUpdateMarket(symbol, market);
+      updateCard(symbol, market || {});
+    };
   }
 
   function start() {
     ensureLeaderboard();
     refreshCards();
     refreshLeaderboard();
-    window.setInterval(refreshCards, 750);
+    window.setInterval(refreshCards, 1500);
     window.setInterval(refreshLeaderboard, 10000);
   }
 
