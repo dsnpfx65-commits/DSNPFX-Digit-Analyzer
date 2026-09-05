@@ -6,8 +6,8 @@ non-trading next-tick ensemble SHADOW candidate per eligible Volatility market.
 
 Independent strategy audits are isolated from adaptive production model memory.
 They record HOT1000 MATCH, COLD200/500/1000 MATCH, COLD20 DIFFERS candidates,
-and per-model adaptive forward candidates before the resolving tick so actual
-next-tick performance can be compared honestly.
+Scribd MATCH rule candidates, and per-model adaptive forward candidates before
+the resolving tick so actual next-tick performance can be compared honestly.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from backend.core.proposal_quote_service import (
     get_cached_differ_quote,
     get_cached_match_quote,
 )
+from backend.core.scribd_match_collector import record_scribd_match
 from backend.core.strategy_forward_audit import get_strategy_forward_audit
 
 
@@ -211,7 +212,7 @@ def _record_match_strategy(
     )
 
 
-def _record_independent_strategies(result: dict, source_tick: dict) -> None:
+def _record_independent_strategies(ai, result: dict, source_tick: dict) -> None:
     metadata = result.get("model_metadata") or {}
     symbol = result.get("symbol")
     if not symbol:
@@ -240,6 +241,15 @@ def _record_independent_strategies(result: dict, source_tick: dict) -> None:
 
     _record_cold20_candidate(result, source_tick)
     record_filtered_cold1000(result, source_tick)
+
+    # The Scribd hypothesis needs actual digit history to reproduce its
+    # percentage, trend/stability, and cursor rules. Reuse the live market
+    # engine's bounded history instead of maintaining a second tick buffer.
+    record_scribd_match(
+        symbol=symbol,
+        digits=ai.market_engine.history(symbol),
+        source_tick=source_tick,
+    )
 
     # Record every available research model independently before the next tick.
     # This audit remains isolated from production until its statistical gates
@@ -296,7 +306,7 @@ async def _shadow_learning_loop(
             ):
                 continue
 
-            _record_independent_strategies(result, source_tick)
+            _record_independent_strategies(ai, result, source_tick)
 
             candidate = result.get("candidate")
             if candidate is None:
