@@ -76,7 +76,13 @@
         <strong>Different models may disagree. Agreement is evidence to measure, not a signal by itself.</strong>
       </div>`;
 
-    const blocker = details.querySelector(".gate-blocker");
+    // Only use the primary blocker that is a direct child of V9 Intelligence.
+    // Nested research panels also contain .gate-blocker elements; using one of
+    // those as insertBefore's reference throws a DOM NotFoundError and stops
+    // the dashboard update loop after the first market.
+    const blocker = Array.from(details.children).find(
+      (child) => child.classList?.contains("gate-blocker")
+    );
     if (blocker) details.insertBefore(panel, blocker);
     else details.appendChild(panel);
     return panel;
@@ -167,17 +173,25 @@
 
   function refreshCards() {
     if (typeof latestMarkets === "undefined" || !latestMarkets || typeof latestMarkets !== "object") return;
-    Object.entries(latestMarkets).forEach(([symbol, market]) => updateCard(symbol, market || {}));
+    Object.entries(latestMarkets).forEach(([symbol, market]) => {
+      try {
+        updateCard(symbol, market || {});
+      } catch (error) {
+        console.warn("Model comparison card refresh failed", symbol, error);
+      }
+    });
   }
 
-  // Use the same proven updateMarket hook pattern as the working proposal UI.
-  // This guarantees comparison values are refreshed on the exact market payload
-  // that updates the rest of the card, instead of depending only on polling.
   if (typeof updateMarket === "function") {
     const originalUpdateMarket = updateMarket;
     updateMarket = function comparisonAwareUpdateMarket(symbol, market) {
       originalUpdateMarket(symbol, market);
-      updateCard(symbol, market || {});
+      try {
+        updateCard(symbol, market || {});
+      } catch (error) {
+        // Comparison telemetry must never interrupt live market rendering.
+        console.warn("Model comparison update failed", symbol, error);
+      }
     };
   }
 
