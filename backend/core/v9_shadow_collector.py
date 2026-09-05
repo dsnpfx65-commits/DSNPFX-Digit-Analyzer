@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 
 from backend.core.cold20_forward_audit import get_cold20_forward_audit
+from backend.core.filtered_strategy_collector import record_filtered_cold1000
 from backend.core.market_family import attach_family_metadata
 from backend.core.proposal_quote_service import (
     get_cached_differ_quote,
@@ -231,6 +232,11 @@ def _record_independent_strategies(result: dict, source_tick: dict) -> None:
         )
 
     _record_cold20_candidate(result, source_tick)
+
+    # Filtered variants remain research-only. They are recorded independently
+    # so we can test whether selective agreement improves economics over the
+    # unfiltered COLD1000 strategy without changing production behavior.
+    record_filtered_cold1000(result, source_tick)
 
 
 async def _shadow_learning_loop(
