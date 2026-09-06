@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
+from backend.core.adaptive_forward_ensemble import get_adaptive_forward_ensemble
 from backend.core.ai_pipeline import DSPFXAIPipeline
 from backend.core.edge_score import EdgeScoreEngine
 from backend.core.market_regime import MarketRegime
@@ -9,10 +10,14 @@ from backend.core.premium_gate import PremiumGate
 
 
 class MultiMarketAI:
-    """Market analyzer with evidence-weighted voting and safe bootstrap learning."""
+    """Market analyzer with one authoritative, forward-verified prediction path.
 
-    # Transition is intentionally excluded from voting because it duplicates
-    # first-order Markov. It remains available in model metadata for research.
+    Frequency, Markov, sequence and research models may all generate raw
+    candidates for prospective auditing. Only the adaptive forward ensemble may
+    publish the single DSNPFX candidate, and only after its conservative
+    break-even-aware verification requirements are satisfied.
+    """
+
     MODELS = ("frequency", "markov", "sequence")
 
     def __init__(self, market_engine, model_memory):
@@ -20,10 +25,12 @@ class MultiMarketAI:
         self.model_memory = model_memory
         self.edge_engine = EdgeScoreEngine()
         self.premium_gate = PremiumGate()
+        self.adaptive_ensemble = get_adaptive_forward_ensemble()
         self._candidate_history = defaultdict(lambda: deque(maxlen=10))
 
     @staticmethod
     def _weighted_candidate(predictions, weights):
+        """Legacy research vote retained only for diagnostics/auditing."""
         votes = {}
         total = 0.0
 
@@ -49,6 +56,59 @@ class MultiMarketAI:
         confidence = winner_weight / total * 100.0
         margin = (winner_weight - runner_up_weight) / total * 100.0
         return winner, round(confidence, 2), round(margin, 2)
+
+    @staticmethod
+    def _ready_digit(report):
+        if not isinstance(report, dict):
+            return None
+        if str(report.get("status", "")).upper() != "READY":
+            return None
+        try:
+            digit = int(report.get("candidate"))
+        except (TypeError, ValueError):
+            return None
+        return digit if 0 <= digit <= 9 else None
+
+    @staticmethod
+    def _adaptive_candidates(raw_predictions, metadata):
+        probability = metadata.get("probability_analysis") or {}
+        hot = metadata.get("hot_1000_continuation") or {}
+        cold = metadata.get("cold_reversion") or {}
+        windows = cold.get("windows") or {}
+        cold1000 = windows.get(1000) or windows.get("1000") or {}
+
+        return {
+            "frequency": raw_predictions.get("frequency"),
+            "markov": raw_predictions.get("markov"),
+            "sequence": raw_predictions.get("sequence"),
+            "probability_best": probability.get("best_match_digit"),
+            "hot_1000": MultiMarketAI._ready_digit(hot),
+            "cold_1000": MultiMarketAI._ready_digit(cold1000),
+        }
+
+    @staticmethod
+    def _conservative_confidence(adaptive_decision):
+        """Use audited forward evidence, never vote share, as confidence."""
+        if not adaptive_decision.get("verified_for_use"):
+            return 0.0
+
+        snapshot = adaptive_decision.get("snapshot") or {}
+        supporters = set(adaptive_decision.get("supporting_models") or [])
+        rows = [
+            row
+            for row in snapshot.get("models", [])
+            if row.get("model") in supporters
+        ]
+        if not rows:
+            return 0.0
+
+        conservative = []
+        for row in rows:
+            try:
+                conservative.append(float(row.get("recent_lower_95_pct") or 0.0))
+            except (TypeError, ValueError):
+                continue
+        return round(min(conservative), 2) if conservative else 0.0
 
     def _stability(self, symbol, candidate):
         history = self._candidate_history[symbol]
@@ -78,6 +138,8 @@ class MultiMarketAI:
                 "symbol": symbol,
                 "status": "COLLECTING",
                 "samples": len(digits),
+                "prediction": None,
+                "candidate": None,
                 "premium": False,
                 "edge": 0,
             }
@@ -102,6 +164,7 @@ class MultiMarketAI:
 
             raw_predictions = result.get("model_predictions", {})
             used_weights = result.get("model_weights", {})
+            metadata = result.get("model_metadata", {})
 
             active_predictions = {}
             active_weights = {}
@@ -123,9 +186,28 @@ class MultiMarketAI:
                 active_predictions[model] = int(prediction)
                 active_weights[model] = weight
 
-            candidate, confidence, confidence_margin = self._weighted_candidate(
-                active_predictions,
-                active_weights,
+            # Keep the old vote only as a research diagnostic. It can no longer
+            # become the published DSNPFX prediction.
+            research_candidate, research_vote_share, research_vote_margin = (
+                self._weighted_candidate(active_predictions, active_weights)
+            )
+
+            adaptive_candidates = self._adaptive_candidates(raw_predictions, metadata)
+            adaptive_decision = self.adaptive_ensemble.choose(
+                symbol,
+                adaptive_candidates,
+            )
+
+            candidate = (
+                adaptive_decision.get("candidate")
+                if adaptive_decision.get("verified_for_use")
+                else None
+            )
+            confidence = self._conservative_confidence(adaptive_decision)
+            confidence_margin = (
+                float(adaptive_decision.get("weight_share_pct") or 0.0)
+                if candidate is not None
+                else 0.0
             )
             stability_score = self._stability(symbol, candidate)
 
@@ -148,9 +230,16 @@ class MultiMarketAI:
                 edge_result=edge,
             )
 
+            adaptive_blockers = []
+            if candidate is None:
+                adaptive_blockers.append(
+                    "No single forward-verified adaptive prediction yet"
+                )
+
             blocking_reasons = list(
                 dict.fromkeys(
-                    edge.get("blocking_reasons", [])
+                    adaptive_blockers
+                    + edge.get("blocking_reasons", [])
                     + premium.get("blocking_reasons", [])
                     + (["Bootstrap shadow learning only"] if bootstrap_learning else [])
                 )
@@ -159,30 +248,34 @@ class MultiMarketAI:
             return {
                 "symbol": symbol,
                 "status": "LIVE",
-                "prediction": premium["published_prediction"],
+                "prediction": premium["published_prediction"] if candidate is not None else None,
                 "candidate": candidate,
                 "confidence": confidence,
-                "confidence_margin": confidence_margin,
+                "confidence_margin": round(confidence_margin, 2),
                 "edge": edge["edge_score"],
                 "edge_grade": edge["edge_grade"],
                 "edge_components": edge["components"],
                 "edge_reasons": edge["reasons"],
-                "premium": premium["is_premium"] and not bootstrap_learning,
+                "premium": bool(candidate is not None and premium["is_premium"]),
                 "premium_status": premium["status"],
                 "blocking_reasons": blocking_reasons,
                 "regime": regime["regime"],
                 "regime_confidence": regime["confidence"],
                 "stability_score": stability_score,
+                "prediction_source": "ADAPTIVE_FORWARD_ENSEMBLE_V10",
+                "adaptive_decision": adaptive_decision,
+                "adaptive_candidates": adaptive_candidates,
+                "research_candidate": research_candidate,
+                "research_vote_share_pct": research_vote_share,
+                "research_vote_margin_pct": research_vote_margin,
                 "model_predictions": active_predictions.copy(),
-                # Preserve every raw model candidate for isolated prospective
-                # auditing, even when a model currently has zero ensemble weight.
                 "raw_model_predictions": {
                     model: raw_predictions.get(model)
                     for model in self.MODELS
                 },
                 "model_weights": active_weights.copy(),
                 "model_statistics": model_statistics,
-                "model_metadata": result.get("model_metadata", {}),
+                "model_metadata": metadata,
                 "bootstrap_learning": bootstrap_learning,
                 "active_models": len(active_predictions),
             }
@@ -192,6 +285,8 @@ class MultiMarketAI:
             return {
                 "symbol": symbol,
                 "status": "ERROR",
+                "prediction": None,
+                "candidate": None,
                 "premium": False,
                 "edge": 0,
                 "error": str(error),
