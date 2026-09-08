@@ -15,6 +15,7 @@ import traceback
 
 from backend.core.adaptive_forward_ensemble import get_adaptive_forward_ensemble
 from backend.core.cold20_forward_audit import get_cold20_forward_audit
+from backend.core.conditional_forward_discovery import get_conditional_forward_discovery
 from backend.core.filtered_strategy_collector import record_filtered_cold1000
 from backend.core.market_family import attach_family_metadata
 from backend.core.proposal_quote_service import (
@@ -41,6 +42,7 @@ def _install_research_resolver(learning) -> None:
     cold20_audit = get_cold20_forward_audit()
     strategy_audit = get_strategy_forward_audit()
     adaptive_audit = get_adaptive_forward_ensemble()
+    conditional_audit = get_conditional_forward_discovery()
 
     def resolve_with_research(
         symbol: str,
@@ -79,6 +81,16 @@ def _install_research_resolver(learning) -> None:
             )
         except Exception as error:
             _research_error("adaptive-resolve", error)
+
+        try:
+            conditional_audit.resolve(
+                symbol,
+                actual,
+                tick_epoch=tick_epoch,
+                tick_quote=tick_quote,
+            )
+        except Exception as error:
+            _research_error("conditional-resolve", error)
 
         return original_resolve(
             symbol,
@@ -273,6 +285,11 @@ def _record_independent_strategies(ai, result: dict, source_tick: dict) -> None:
         get_adaptive_forward_ensemble().create_from_result(result, source_tick)
     except Exception as error:
         _research_error(f"adaptive-forward:{symbol}", error)
+
+    try:
+        get_conditional_forward_discovery().create_from_result(result, source_tick)
+    except Exception as error:
+        _research_error(f"conditional-forward:{symbol}", error)
 
 
 async def _shadow_learning_supervisor(
