@@ -1,0 +1,51 @@
+name: DSNPFX V10 validation
+
+on:
+  push:
+    branches:
+      - redesign-market-insight
+    paths:
+      - .github/workflows/v10-validation.yml
+      - backend/core/adaptive_forward_ensemble.py
+      - backend/core/multi_market_ai.py
+      - tests/test_adaptive_forward_ensemble.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-v10:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out redesign branch
+        uses: actions/checkout@v4
+        with:
+          ref: redesign-market-insight
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -q -r requirements.txt
+          python -m pip install -q pytest
+
+      - name: Compile V10 prediction engine
+        run: |
+          python -m py_compile \
+            backend/core/adaptive_forward_ensemble.py \
+            backend/core/multi_market_ai.py
+
+      - name: Run V10 authority tests
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q tests/test_adaptive_forward_ensemble.py
+
+      - name: Run existing repository tests
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q tests
