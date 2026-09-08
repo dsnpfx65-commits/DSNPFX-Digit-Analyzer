@@ -24,12 +24,49 @@
     if (evidenceEyebrow) evidenceEyebrow.textContent = "V10 Forward Evidence Watch";
   }
 
+  function authoritativeState(market = {}) {
+    const published = market?.published_prediction;
+    const verified = Boolean(
+      market?.is_premium
+      && published !== null
+      && published !== undefined
+    );
+    return { verified, published };
+  }
+
+  function enforceAuthorityScanner(card, market = {}) {
+    if (!card) return;
+
+    const { verified, published } = authoritativeState(market);
+    const digit = card.querySelector(".scanner-digit");
+    const label = card.querySelector(".scanner-label");
+    const status = card.querySelector(".match-status");
+    const note = card.querySelector(".scanner-note");
+
+    if (verified) {
+      if (digit && String(digit.textContent).trim() !== String(published)) digit.textContent = String(published);
+      if (label && label.textContent !== "PREDICTION") label.textContent = "PREDICTION";
+      if (status && status.textContent !== "Match Found") status.textContent = "Match Found";
+      return;
+    }
+
+    // Hard presentation invariant: an unverified market can never expose a digit
+    // in the main scanner, even if an older cached research scanner timer fires.
+    if (digit && digit.textContent !== "--") digit.textContent = "--";
+    if (label && (label.textContent === "CANDIDATE" || label.textContent === "PREDICTION")) {
+      label.textContent = "WAIT";
+    }
+    if (status && status.textContent === "Research Candidate") status.textContent = "No Verified Prediction";
+    if (note && /NOT VERIFIED|research candidate/i.test(note.textContent || "")) {
+      note.textContent = "V10 authority has not verified a digit · rescanning";
+    }
+  }
+
   function relabelCard(card, market = {}) {
     if (!card) return;
 
     const candidate = market?.candidate_prediction;
-    const published = market?.published_prediction;
-    const isVerified = Boolean(market?.is_premium && published !== null && published !== undefined);
+    const { verified: isVerified } = authoritativeState(market);
     const hasAuthority = candidate !== null && candidate !== undefined;
 
     const regimeSmall = card.querySelector(".market-tick-row > div:nth-child(3) small");
@@ -71,15 +108,20 @@
 
     const confidenceLabel = card.querySelector(".verified-confidence")?.parentElement?.querySelector("span");
     if (confidenceLabel) confidenceLabel.textContent = "Production Evidence Confidence";
+
+    enforceAuthorityScanner(card, market);
+  }
+
+  function marketForCard(card) {
+    const symbol = card?.dataset?.symbol;
+    return (typeof latestMarkets === "object" && latestMarkets && symbol)
+      ? (latestMarkets[symbol] || {})
+      : {};
   }
 
   function relabelAllCards() {
     document.querySelectorAll(".market-card").forEach((card) => {
-      const symbol = card.dataset.symbol;
-      const market = (typeof latestMarkets === "object" && latestMarkets && symbol)
-        ? (latestMarkets[symbol] || {})
-        : {};
-      relabelCard(card, market);
+      relabelCard(card, marketForCard(card));
     });
   }
 
@@ -89,7 +131,9 @@
     const baseUpdateMarket = window.updateMarket;
     window.updateMarket = function dsnpfxV10UpdateMarket(symbol, market) {
       const result = baseUpdateMarket(symbol, market);
-      const card = (typeof cards !== "undefined" && cards?.get) ? cards.get(symbol) : document.querySelector(`.market-card[data-symbol="${symbol}"]`);
+      const card = (typeof cards !== "undefined" && cards?.get)
+        ? cards.get(symbol)
+        : document.querySelector(`.market-card[data-symbol="${symbol}"]`);
       relabelCard(card, market || {});
       return result;
     };
@@ -107,6 +151,24 @@
   document.addEventListener("DOMContentLoaded", () => {
     relabelStaticShell();
     relabelAllCards();
+
+    const stack = document.getElementById("marketStack");
+    if (stack && typeof MutationObserver === "function") {
+      let scheduled = false;
+      const observer = new MutationObserver(() => {
+        if (scheduled) return;
+        scheduled = true;
+        window.requestAnimationFrame(() => {
+          scheduled = false;
+          relabelAllCards();
+        });
+      });
+      observer.observe(stack, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+    }
   });
 
   setTimeout(relabelAllCards, 0);
