@@ -1,37 +1,28 @@
 (() => {
   "use strict";
 
-  // V10 scanner controller.
-  // Only the published, production-approved Adaptive Forward Ensemble digit may
-  // ever be revealed in the main scanner. Research candidates stay in the
-  // evidence panels and are never rendered inside the prediction orb.
-  const SCAN_MS = 2200;
-  const REVEAL_MS = 1100;
-  const CARD_STAGGER_MS = 70;
+  // DSNPFX V10 next-tick trial scanner.
+  //
+  // Goal:
+  //   TEST PREDICTION -> next Deriv tick -> exact last digit -> MATCH/WIN or MISS/LOSS.
+  //
+  // This is deliberately labelled TEST PREDICTION. It does not bypass the
+  // production gate and it is not counted as a verified trading signal.
+  // A production-approved V10 prediction always has priority over this trial.
+
+  const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
   const ROTATION_MS = 1350;
+  const RESULT_HOLD_MS = 1800;
+  const RECONNECT_MS = 1800;
 
-  function animateScannerSweeps(now) {
-    const cards = document.querySelectorAll("#marketStack .market-card");
-    const baseAngle = ((now % ROTATION_MS) / ROTATION_MS) * 360;
+  const directTicks = new Map();
+  const trialCandidates = new Map();
+  const trials = new Map();
+  const subscribed = new Set();
+  const trialStats = new Map();
 
-    cards.forEach((card, index) => {
-      if (card.classList.contains("signal") && card.classList.contains("revealed")) return;
-
-      const sweep = card.querySelector(".scanner-sweep");
-      const orb = card.querySelector(".scanner-orb");
-      if (sweep) {
-        sweep.style.animation = "none";
-        sweep.style.transform = `rotate(${baseAngle + index * 11}deg)`;
-        sweep.style.opacity = card.classList.contains("revealed") ? "0.28" : "0.92";
-      }
-      if (orb && !card.classList.contains("revealed")) {
-        const pulse = 0.17 + (Math.sin(now / 260 + index * 0.4) + 1) * 0.09;
-        orb.style.boxShadow = `inset 0 0 30px rgba(33,243,138,.12),0 0 38px rgba(33,243,138,${pulse.toFixed(3)})`;
-      }
-    });
-
-    window.requestAnimationFrame(animateScannerSweeps);
-  }
+  let socket = null;
+  let reconnectTimer = null;
 
   function isVerified(market) {
     return Boolean(
@@ -41,77 +32,324 @@
     );
   }
 
-  function beginScan(card, market, verified) {
-    const digit = card.querySelector(".scanner-digit");
-    const label = card.querySelector(".scanner-label");
-    const status = card.querySelector(".match-status");
-    const note = card.querySelector(".scanner-note");
+  function validDigit(value) {
+    const number = Number(value);
+    return Number.isInteger(number) && number >= 0 && number <= 9
+      ? number
+      : null;
+  }
 
+  function researchCandidate(market) {
+    const predictions = market?.model_predictions || {};
+    const weights = market?.model_weights || {};
+    const totals = new Map();
+
+    Object.entries(predictions).forEach(([model, rawDigit]) => {
+      const digit = validDigit(rawDigit);
+      if (digit === null) return;
+
+      const rawWeight = Number(weights?.[model]);
+      const weight = Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : 1;
+      totals.set(digit, (totals.get(digit) || 0) + weight);
+    });
+
+    if (!totals.size) return null;
+
+    const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+    if (ranked.length > 1 && Math.abs(ranked[0][1] - ranked[1][1]) < 1e-12) {
+      return null;
+    }
+    return ranked[0][0];
+  }
+
+  function statsFor(symbol) {
+    if (!trialStats.has(symbol)) {
+      trialStats.set(symbol, { wins: 0, losses: 0, resolved: 0 });
+    }
+    return trialStats.get(symbol);
+  }
+
+  function accuracyText(symbol) {
+    const stats = statsFor(symbol);
+    if (!stats.resolved) return "Trial accuracy: -- (n=0)";
+    const accuracy = (stats.wins / stats.resolved) * 100;
+    return `Trial accuracy: ${accuracy.toFixed(2)}% (n=${stats.resolved})`;
+  }
+
+  function cardFor(symbol) {
+    if (typeof cards !== "undefined" && cards?.get) {
+      const card = cards.get(symbol);
+      if (card) return card;
+    }
+    return document.querySelector(`.market-card[data-symbol="${symbol}"]`);
+  }
+
+  function clearLegacyTimers(card) {
+    if (!card) return;
     clearTimeout(card._scanRevealTimer);
     clearTimeout(card._scanRestartTimer);
     card._scanRevealTimer = null;
     card._scanRestartTimer = null;
-    card.classList.remove("revealed");
-
-    if (digit) digit.textContent = "--";
-    if (label) label.textContent = "SCANNING";
-    if (status) status.textContent = "Analyzing live ticks";
-    if (note) note.textContent = "Checking V10 adaptive evidence";
-
-    const index = Math.max(0, currentOrder.indexOf(card.dataset.symbol));
-    const delay = SCAN_MS + index * CARD_STAGGER_MS;
-
-    card._scanRevealTimer = window.setTimeout(() => {
-      card._scanRevealTimer = null;
-      card.classList.add("revealed");
-
-      const latest = latestMarkets?.[card.dataset.symbol] || market || {};
-      const latestVerified = isVerified(latest);
-
-      if (verified && latestVerified) {
-        if (digit) digit.textContent = safeText(latest.published_prediction);
-        if (label) label.textContent = "PREDICTION";
-        if (status) status.textContent = "Match Found";
-        if (note) note.textContent = evidenceNote(latest, true);
-        return;
-      }
-
-      // V10 abstains when the adaptive authority has not passed every gate.
-      // Do not substitute research_candidate, candidate_prediction, proposal
-      // best digit, HOT/COLD, or any legacy model vote here.
-      if (digit) digit.textContent = "--";
-      if (label) label.textContent = "WAIT";
-      if (status) status.textContent = "No Verified Prediction";
-      if (note) note.textContent = "Adaptive authority has not qualified a digit · rescanning";
-
-      card._scanRestartTimer = window.setTimeout(() => {
-        card._scanRestartTimer = null;
-        const newest = latestMarkets?.[card.dataset.symbol] || latest || {};
-        beginScan(card, newest, isVerified(newest));
-      }, REVEAL_MS);
-    }, delay);
   }
 
-  // Replace dashboard.js scanner binding with the V10 single-authority scanner.
-  updateScanner = function updateScannerSingle(card, market, verified) {
-    const signature = scannerSignature(market, verified);
+  function setScanner(card, { label, digit, status, note, revealed = true }) {
+    if (!card) return;
+    clearLegacyTimers(card);
 
-    if (verified) {
-      if (card._scannerSignature === signature && card.classList.contains("revealed")) {
-        const note = card.querySelector(".scanner-note");
-        if (note) note.textContent = evidenceNote(market, true);
-        return;
-      }
-      card._scannerSignature = signature;
-      beginScan(card, market, true);
+    const digitNode = card.querySelector(".scanner-digit");
+    const labelNode = card.querySelector(".scanner-label");
+    const statusNode = card.querySelector(".match-status");
+    const noteNode = card.querySelector(".scanner-note");
+
+    card.classList.toggle("revealed", Boolean(revealed));
+
+    if (digitNode) digitNode.textContent = digit;
+    if (labelNode) labelNode.textContent = label;
+    if (statusNode) statusNode.textContent = status;
+    if (noteNode) noteNode.textContent = note;
+  }
+
+  function renderVerified(symbol, market) {
+    const card = cardFor(symbol);
+    setScanner(card, {
+      label: "PREDICTION",
+      digit: String(market.published_prediction),
+      status: "Match Found",
+      note: typeof evidenceNote === "function"
+        ? evidenceNote(market, true)
+        : "V10 production evidence approved",
+      revealed: true,
+    });
+  }
+
+  function renderTrialPending(symbol, trial) {
+    const card = cardFor(symbol);
+    setScanner(card, {
+      label: "TEST PREDICTION",
+      digit: String(trial.prediction),
+      status: "Waiting for next Deriv tick",
+      note: `Locked after tick ${trial.sourceEpoch} · ${accuracyText(symbol)}`,
+      revealed: true,
+    });
+  }
+
+  function renderTrialResult(symbol, trial) {
+    const card = cardFor(symbol);
+    const win = trial.result === "WIN";
+    setScanner(card, {
+      label: win ? "MATCH / WIN" : "MISS / LOSS",
+      digit: String(trial.prediction),
+      status: `Deriv Last Digit: ${trial.actual}`,
+      note: `${trial.prediction} → ${trial.actual} · ${accuracyText(symbol)}`,
+      revealed: true,
+    });
+  }
+
+  function renderWaiting(symbol) {
+    const card = cardFor(symbol);
+    setScanner(card, {
+      label: "SCANNING",
+      digit: "--",
+      status: "Building next-tick test",
+      note: `Waiting for a model digit · ${accuracyText(symbol)}`,
+      revealed: false,
+    });
+  }
+
+  function formatTick(tick) {
+    const quote = Number(tick?.quote);
+    const pipSize = Number(tick?.pip_size);
+    if (!Number.isFinite(quote) || !Number.isInteger(pipSize) || pipSize < 0) {
+      return null;
+    }
+    const displayed = quote.toFixed(pipSize);
+    const character = displayed[displayed.length - 1];
+    if (!/\d/.test(character)) return null;
+    return {
+      epoch: Number(tick.epoch),
+      displayed,
+      digit: Number(character),
+    };
+  }
+
+  function resolveThenCommit(symbol, tick) {
+    const market = (typeof latestMarkets === "object" && latestMarkets)
+      ? latestMarkets[symbol]
+      : null;
+
+    if (isVerified(market)) {
+      trials.delete(symbol);
+      renderVerified(symbol, market);
       return;
     }
 
-    card._scannerSignature = signature;
-    if (!card._scanRevealTimer && !card._scanRestartTimer) {
-      beginScan(card, market, false);
+    const existing = trials.get(symbol);
+
+    // Resolve only on a strictly later Deriv tick than the source tick.
+    if (existing?.state === "PENDING" && tick.epoch > existing.sourceEpoch) {
+      const result = existing.prediction === tick.digit ? "WIN" : "LOSS";
+      const stats = statsFor(symbol);
+      stats.resolved += 1;
+      if (result === "WIN") stats.wins += 1;
+      else stats.losses += 1;
+
+      const resolved = {
+        ...existing,
+        state: "RESOLVED",
+        actual: tick.digit,
+        resolvedEpoch: tick.epoch,
+        resolvedQuote: tick.displayed,
+        result,
+      };
+      trials.set(symbol, resolved);
+      renderTrialResult(symbol, resolved);
+
+      window.setTimeout(() => {
+        const current = trials.get(symbol);
+        if (current?.state === "RESOLVED" && current.resolvedEpoch === resolved.resolvedEpoch) {
+          trials.delete(symbol);
+          const newestMarket = (typeof latestMarkets === "object" && latestMarkets)
+            ? latestMarkets[symbol]
+            : null;
+          if (!isVerified(newestMarket)) renderWaiting(symbol);
+        }
+      }, RESULT_HOLD_MS);
+
+      // Never create the next trial on the same tick that resolved this one.
+      return;
     }
+
+    if (existing) {
+      if (existing.state === "PENDING") renderTrialPending(symbol, existing);
+      return;
+    }
+
+    const candidate = validDigit(trialCandidates.get(symbol));
+    if (candidate === null) {
+      renderWaiting(symbol);
+      return;
+    }
+
+    // Commit only after this Deriv tick has arrived. The prediction is now
+    // frozen and can only be judged by a strictly later tick for this symbol.
+    const trial = {
+      state: "PENDING",
+      prediction: candidate,
+      sourceEpoch: tick.epoch,
+      sourceQuote: tick.displayed,
+      createdAt: Date.now(),
+    };
+    trials.set(symbol, trial);
+    renderTrialPending(symbol, trial);
+  }
+
+  function handleTick(rawTick) {
+    const symbol = rawTick?.symbol;
+    if (!symbol) return;
+
+    const tick = formatTick(rawTick);
+    if (!tick || !Number.isFinite(tick.epoch)) return;
+
+    const previous = directTicks.get(symbol);
+    if (previous && tick.epoch <= previous.epoch) return;
+    directTicks.set(symbol, tick);
+
+    resolveThenCommit(symbol, tick);
+  }
+
+  function subscribe(symbol) {
+    if (!symbol || subscribed.has(symbol)) return;
+    subscribed.add(symbol);
+
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ ticks: symbol, subscribe: 1 }));
+    }
+  }
+
+  function connect() {
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    socket = new WebSocket(WS_URL);
+
+    socket.addEventListener("open", () => {
+      subscribed.forEach((symbol) => {
+        socket.send(JSON.stringify({ ticks: symbol, subscribe: 1 }));
+      });
+    });
+
+    socket.addEventListener("message", (event) => {
+      let payload;
+      try {
+        payload = JSON.parse(event.data);
+      } catch (_error) {
+        return;
+      }
+      if (payload?.tick) handleTick(payload.tick);
+    });
+
+    socket.addEventListener("close", () => {
+      socket = null;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = window.setTimeout(connect, RECONNECT_MS);
+    });
+
+    socket.addEventListener("error", () => {
+      try { socket.close(); } catch (_error) { /* no-op */ }
+    });
+  }
+
+  function animateScannerSweeps(now) {
+    const marketCards = document.querySelectorAll("#marketStack .market-card");
+    const baseAngle = ((now % ROTATION_MS) / ROTATION_MS) * 360;
+
+    marketCards.forEach((card, index) => {
+      const sweep = card.querySelector(".scanner-sweep");
+      if (!sweep) return;
+      sweep.style.animation = "none";
+      sweep.style.transform = `rotate(${baseAngle + index * 11}deg)`;
+      sweep.style.opacity = card.classList.contains("revealed") ? "0.28" : "0.92";
+    });
+
+    window.requestAnimationFrame(animateScannerSweeps);
+  }
+
+  // The dashboard calls updateScanner whenever fresh backend analysis arrives.
+  // We use that only to refresh the research candidate. The exact WIN/LOSS
+  // settlement is driven by the independent live Deriv tick subscription above.
+  updateScanner = function updateScannerNextTickTrial(card, market, verified) {
+    const symbol = card?.dataset?.symbol || market?.symbol;
+    if (!symbol) return;
+
+    clearLegacyTimers(card);
+    subscribe(symbol);
+    connect();
+
+    if (verified || isVerified(market)) {
+      trialCandidates.delete(symbol);
+      trials.delete(symbol);
+      renderVerified(symbol, market);
+      return;
+    }
+
+    const candidate = researchCandidate(market);
+    if (candidate === null) trialCandidates.delete(symbol);
+    else trialCandidates.set(symbol, candidate);
+
+    const trial = trials.get(symbol);
+    if (trial?.state === "PENDING") {
+      renderTrialPending(symbol, trial);
+      return;
+    }
+    if (trial?.state === "RESOLVED") {
+      renderTrialResult(symbol, trial);
+      return;
+    }
+
+    renderWaiting(symbol);
   };
 
+  connect();
   window.requestAnimationFrame(animateScannerSweeps);
 })();
