@@ -85,6 +85,17 @@ except Exception:
         return None
 
 try:
+    from backend.core.conditional_forward_discovery import (
+        get_conditional_forward_discovery,
+    )
+    conditional_forward_discovery_loaded = True
+except Exception:
+    conditional_forward_discovery_loaded = False
+
+    def get_conditional_forward_discovery():
+        return None
+
+try:
     from backend.core.all_volatility_web_runner import run_forever
 except Exception:
     run_forever = None
@@ -149,7 +160,7 @@ async def health():
         "status": "ok",
         "engine": "dsnpfx-market-insight",
         "build_revision": BUILD_REVISION,
-        "ui_generation": "V9_RESEARCH_LAYER",
+        "ui_generation": "V10_ADAPTIVE_FORWARD",
         "market_count": current.get("market_count", 0),
         "live_market_count": current.get("live_market_count", 0),
         "scanner_loaded": run_forever is not None,
@@ -157,6 +168,7 @@ async def health():
         "precision_runtime_loaded": precision_runtime_loaded,
         "strategy_forward_audit_loaded": strategy_forward_audit_loaded,
         "adaptive_forward_ensemble_loaded": adaptive_forward_ensemble_loaded,
+        "conditional_forward_discovery_loaded": conditional_forward_discovery_loaded,
         "precision_tracked_markets": precision.get("tracked_markets", 0),
         "precision_healthy_markets": precision.get("healthy_markets", 0),
         "precision_waiting_markets": precision.get("waiting_markets", 0),
@@ -180,6 +192,7 @@ async def runtime_health():
         "build_revision": BUILD_REVISION,
         "precision_runtime_loaded": precision_runtime_loaded,
         "adaptive_forward_ensemble_loaded": adaptive_forward_ensemble_loaded,
+        "conditional_forward_discovery_loaded": conditional_forward_discovery_loaded,
         "market_count": current.get("market_count", 0),
         "live_market_count": current.get("live_market_count", 0),
         **precision,
@@ -188,13 +201,7 @@ async def runtime_health():
 
 @app.get("/api/strategy-comparison")
 async def strategy_comparison(symbol: str | None = None):
-    """Read-only prospective strategy leaderboard.
-
-    Rankings use resolved next-tick outcomes recorded before settlement. No
-    strategy is marked EVIDENCE_EDGE until it has at least 100 resolved samples
-    and its 95% Wilson lower bound clears both its natural contract baseline and
-    the average live Deriv break-even captured for priced samples.
-    """
+    """Read-only prospective strategy leaderboard."""
     rows = get_strategy_comparison(symbol)
     return {
         "build_revision": BUILD_REVISION,
@@ -244,6 +251,40 @@ async def adaptive_forward_results(symbol: str | None = None):
         "symbol": symbol or "ALL",
         "market_count": len(snapshots),
         "markets": snapshots,
+    }
+
+
+@app.get("/api/conditional-discovery")
+async def conditional_discovery(symbol: str | None = None, limit: int = 100):
+    """Predefined conditional/regime next-tick discovery with holdout validation.
+
+    Discovery and validation outcomes are partitioned before settlement. This
+    endpoint is research-only: even a validation edge does not bypass V10's
+    production publication gate.
+    """
+    if not conditional_forward_discovery_loaded:
+        return {
+            "build_revision": BUILD_REVISION,
+            "loaded": False,
+            "scope": "RESEARCH_ONLY_CONDITIONAL_DISCOVERY",
+            "symbol": symbol or "ALL",
+            "leaders": [],
+        }
+    audit = get_conditional_forward_discovery()
+    if audit is None:
+        return {
+            "build_revision": BUILD_REVISION,
+            "loaded": False,
+            "scope": "RESEARCH_ONLY_CONDITIONAL_DISCOVERY",
+            "symbol": symbol or "ALL",
+            "leaders": [],
+        }
+    payload = audit.summary(symbol=symbol)
+    payload["leaders"] = payload.get("leaders", [])[: max(1, min(int(limit), 1000))]
+    return {
+        "build_revision": BUILD_REVISION,
+        "loaded": True,
+        **payload,
     }
 
 
