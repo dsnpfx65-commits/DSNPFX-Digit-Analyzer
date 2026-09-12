@@ -1,14 +1,15 @@
 (() => {
   "use strict";
 
-  // DSNPFX V10 next-tick trial scanner.
+  // DSNPFX V12 precision next-tick trial scanner.
   //
   // Goal:
-  //   TEST PREDICTION -> next Deriv tick -> exact last digit -> MATCH/WIN or MISS/LOSS.
+  //   PRECISION TEST -> next Deriv tick -> exact last digit -> MATCH/WIN or MISS/LOSS.
   //
-  // This is deliberately labelled TEST PREDICTION. It does not bypass the
-  // production gate and it is not counted as a verified trading signal.
-  // A production-approved V10 prediction always has priority over this trial.
+  // Raw model votes are deliberately excluded. A browser trial is created only
+  // when the backend V12 precision selector has an independently validated
+  // conditional edge confirming the adaptive candidate. Production-approved
+  // predictions still take priority.
 
   const WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
   const ROTATION_MS = 1350;
@@ -39,27 +40,10 @@
       : null;
   }
 
-  function researchCandidate(market) {
-    const predictions = market?.model_predictions || {};
-    const weights = market?.model_weights || {};
-    const totals = new Map();
-
-    Object.entries(predictions).forEach(([model, rawDigit]) => {
-      const digit = validDigit(rawDigit);
-      if (digit === null) return;
-
-      const rawWeight = Number(weights?.[model]);
-      const weight = Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : 1;
-      totals.set(digit, (totals.get(digit) || 0) + weight);
-    });
-
-    if (!totals.size) return null;
-
-    const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
-    if (ranked.length > 1 && Math.abs(ranked[0][1] - ranked[1][1]) < 1e-12) {
-      return null;
-    }
-    return ranked[0][0];
+  function precisionCandidate(market) {
+    const decision = market?.precision_decision || {};
+    if (!decision?.verified_for_use) return null;
+    return validDigit(decision?.candidate);
   }
 
   function statsFor(symbol) {
@@ -71,9 +55,9 @@
 
   function accuracyText(symbol) {
     const stats = statsFor(symbol);
-    if (!stats.resolved) return "Trial accuracy: -- (n=0)";
+    if (!stats.resolved) return "Precision trial: -- (n=0)";
     const accuracy = (stats.wins / stats.resolved) * 100;
-    return `Trial accuracy: ${accuracy.toFixed(2)}% (n=${stats.resolved})`;
+    return `Precision trial: ${accuracy.toFixed(2)}% (n=${stats.resolved})`;
   }
 
   function cardFor(symbol) {
@@ -117,7 +101,7 @@
       status: "Match Found",
       note: typeof evidenceNote === "function"
         ? evidenceNote(market, true)
-        : "V10 production evidence approved",
+        : "V12 precision evidence approved",
       revealed: true,
     });
   }
@@ -125,7 +109,7 @@
   function renderTrialPending(symbol, trial) {
     const card = cardFor(symbol);
     setScanner(card, {
-      label: "TEST PREDICTION",
+      label: "PRECISION TEST",
       digit: String(trial.prediction),
       status: "Waiting for next Deriv tick",
       note: `Locked after tick ${trial.sourceEpoch} · ${accuracyText(symbol)}`,
@@ -150,8 +134,8 @@
     setScanner(card, {
       label: "SCANNING",
       digit: "--",
-      status: "Building next-tick test",
-      note: `Waiting for a model digit · ${accuracyText(symbol)}`,
+      status: "Waiting for validated edge",
+      note: `V12 ignores raw model votes · ${accuracyText(symbol)}`,
       revealed: false,
     });
   }
@@ -185,7 +169,6 @@
 
     const existing = trials.get(symbol);
 
-    // Resolve only on a strictly later Deriv tick than the source tick.
     if (existing?.state === "PENDING" && tick.epoch > existing.sourceEpoch) {
       const result = existing.prediction === tick.digit ? "WIN" : "LOSS";
       const stats = statsFor(symbol);
@@ -214,8 +197,6 @@
           if (!isVerified(newestMarket)) renderWaiting(symbol);
         }
       }, RESULT_HOLD_MS);
-
-      // Never create the next trial on the same tick that resolved this one.
       return;
     }
 
@@ -230,8 +211,6 @@
       return;
     }
 
-    // Commit only after this Deriv tick has arrived. The prediction is now
-    // frozen and can only be judged by a strictly later tick for this symbol.
     const trial = {
       state: "PENDING",
       prediction: candidate,
@@ -315,9 +294,6 @@
     window.requestAnimationFrame(animateScannerSweeps);
   }
 
-  // The dashboard calls updateScanner whenever fresh backend analysis arrives.
-  // We use that only to refresh the research candidate. The exact WIN/LOSS
-  // settlement is driven by the independent live Deriv tick subscription above.
   updateScanner = function updateScannerNextTickTrial(card, market, verified) {
     const symbol = card?.dataset?.symbol || market?.symbol;
     if (!symbol) return;
@@ -333,7 +309,7 @@
       return;
     }
 
-    const candidate = researchCandidate(market);
+    const candidate = precisionCandidate(market);
     if (candidate === null) trialCandidates.delete(symbol);
     else trialCandidates.set(symbol, candidate);
 
