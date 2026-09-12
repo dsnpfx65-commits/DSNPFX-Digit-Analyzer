@@ -7,7 +7,11 @@ from backend.core.cold20_forward_audit import get_cold20_forward_audit
 from backend.core.conditional_forward_discovery import get_conditional_forward_discovery
 from backend.core.filtered_strategy_collector import record_filtered_cold1000
 from backend.core.market_family import attach_family_metadata
-from backend.core.proposal_quote_service import get_cached_differ_quote, get_cached_match_quote
+from backend.core.proposal_quote_service import (
+    get_cached_differ_quote,
+    get_cached_match_quote,
+    request_live_match_quote_once,
+)
 from backend.core.scribd_match_collector import record_scribd_match
 from backend.core.strategy_forward_audit import get_strategy_forward_audit
 from backend.core.v11_selective_demo_trader import get_v11_selective_demo_trader
@@ -76,10 +80,27 @@ def _record_independent_strategies(ai,result,source_tick):
         ("scribd-match",lambda:record_scribd_match(symbol=symbol,digits=ai.market_engine.history(symbol),source_tick=source_tick)),
         ("adaptive-forward",lambda:get_adaptive_forward_ensemble().create_from_result(result,source_tick)),
         ("conditional-forward",lambda:get_conditional_forward_discovery().create_from_result(result,source_tick)),
-        ("v11-demo",lambda:get_v11_selective_demo_trader().consider(result,source_tick)),
     ]:
         try:fn()
         except Exception as error:_research_error(f"{label}:{symbol}",error)
+
+async def _record_v11_demo_trade(result,source_tick,latest_ticks):
+    """Quote and commit only if the exact source tick is still current."""
+    trader=get_v11_selective_demo_trader()
+    selection=trader.select_candidate(result,source_tick)
+    if selection is None:return False
+    symbol=selection["symbol"]; source_epoch=int(selection["source_epoch"]); digit=int(selection["prediction"])
+    proposal=await request_live_match_quote_once(symbol,digit)
+    current=latest_ticks.get(symbol)
+    if current is None:
+        return False
+    try: current_epoch=int(current["epoch"])
+    except (KeyError,TypeError,ValueError): return False
+    # If a new tick arrived during the proposal request, this was no longer an
+    # executable one-tick decision. Discard it rather than introducing lookahead.
+    if current_epoch!=source_epoch:
+        return False
+    return trader.commit_candidate(selection,proposal)
 
 async def _shadow_learning_supervisor(base,ai,learning,latest_ticks,quality_gate,worker_executor,generation):
     while base._generation_is_current(generation):
@@ -102,6 +123,10 @@ async def _shadow_learning_loop(base,ai,learning,latest_ticks,quality_gate,worke
             symbol=result.get("symbol"); source_tick=latest_ticks.get(symbol)
             if not symbol or symbol not in base.VOLATILITY_SYMBOLS or source_tick is None or result.get("status")!="LIVE":continue
             _record_independent_strategies(ai,result,source_tick)
+            try:
+                await _record_v11_demo_trade(result,source_tick,latest_ticks)
+            except Exception as error:
+                _research_error(f"v11-on-demand:{symbol}",error)
             candidate=result.get("candidate")
             if candidate is None:continue
             market_quality=str(result.get("market_quality") or "UNKNOWN")
