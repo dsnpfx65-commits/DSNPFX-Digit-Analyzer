@@ -236,6 +236,9 @@ def _market_payload(
             else None
         ),
         "candidate_prediction": candidate,
+        "prediction_source": result.get("prediction_source"),
+        "precision_decision": dict(result.get("precision_decision") or {}),
+        "adaptive_decision": dict(result.get("adaptive_decision") or {}),
         "confidence": _number(
             result.get("confidence")
         ),
@@ -521,707 +524,309 @@ def _select_dashboard_market(
         for market in ranked
         if market.get("status") == "live"
     ]
+    if not live_markets:
+        return None
 
-    production_signals = [
+    premium = [
         market
         for market in live_markets
         if market.get("is_premium")
     ]
+    if premium:
+        return premium[0]
 
-    if production_signals:
-        return production_signals[0]
+    return live_markets[0]
 
-    standard_candidates = [
-        market
-        for market in live_markets
-        if market.get(
-            "production_eligible"
-        )
-    ]
 
-    if standard_candidates:
-        return standard_candidates[0]
-
-    if live_markets:
-        return live_markets[0]
+def _statistics_payload(
+    ranked,
+    engine,
+    quality_gate,
+):
+    quality_map = (
+        quality_gate.assess_all_map()
+    )
+    qualified = sum(
+        quality.classification == "TEN_DIGIT"
+        for quality in quality_map.values()
+    )
 
     return {
-        "status": "collecting",
-        "symbol": "R_100",
-        "message": (
-            "Collecting volatility market data..."
+        "markets_scanned": len(ranked),
+        "production_markets": sum(
+            market.get("production_eligible", False)
+            for market in ranked
         ),
-        "decision": "WAIT",
-        "is_premium": False,
+        "shadow_markets": sum(
+            not market.get("production_eligible", False)
+            for market in ranked
+        ),
+        "premium_markets": sum(
+            market.get("is_premium", False)
+            for market in ranked
+        ),
+        "qualified_markets": qualified,
+        "tracked_markets": len(
+            engine.markets
+        ),
     }
 
 
-def _opportunity_payload(ranked):
-    return [
-        {
-            "symbol": market.get("symbol"),
-            "candidate_prediction": (
-                market.get(
-                    "candidate_prediction"
-                )
-            ),
-            "published_prediction": (
-                market.get(
-                    "published_prediction"
-                )
-            ),
-            "confidence": market.get(
-                "confidence"
-            ),
-            "edge_score": market.get(
-                "edge_score"
-            ),
-            "edge_grade": market.get(
-                "edge_grade"
-            ),
-            "regime": market.get(
-                "regime"
-            ),
-            "market_quality": market.get(
-                "market_quality"
-            ),
-            "mode": market.get("mode"),
-            "decision": market.get(
-                "decision"
-            ),
-            "is_premium": market.get(
-                "is_premium"
-            ),
-            "blocking_reasons": (
-                market.get(
-                    "blocking_reasons",
-                    [],
-                )
-            ),
-        }
-        for market in ranked
-    ]
-
-
-async def _scan_loop(
-    ai,
+def _state_payload(
+    ranked,
+    opportunities,
+    engine,
     learning,
-    latest_ticks,
-    quality_gate,
-    accuracy_gate,
-    worker_executor,
-    generation,
 ):
-    while True:
-        await asyncio.sleep(
-            SCAN_INTERVAL
-        )
+    selected = _select_dashboard_market(
+        ranked
+    )
 
-        results = await _run_blocking(
-            worker_executor,
-            ai.scan,
-        )
-
-        if not _generation_is_current(generation):
-            return
-
-        if not results:
-            continue
-
-        attach_family_metadata(results)
-
-        await _run_blocking(
-            worker_executor,
-            _attach_quality,
-            results,
-            quality_gate,
-        )
-
-        if not _generation_is_current(generation):
-            return
-
-        markets = {
-            result["symbol"]: (
-                _market_payload(
-                    result,
-                    latest_ticks,
-                )
-            )
-            for result in results
-            if result.get("symbol")
-            in VOLATILITY_SYMBOLS
-        }
-
-        await _run_blocking(
-            worker_executor,
-            _apply_production_accuracy_gate,
-            markets,
-            accuracy_gate,
-        )
-
-        if not _generation_is_current(generation):
-            return
-
-        ranked = _rank_markets(markets)
-        dashboard = _select_dashboard_market(
-            ranked
-        )
-
-        statistics = learning.honest_statistics(
-            rolling_limit=100
-        )
-
-        no_pending = (
-            statistics.get("pending", 0)
-            == 0
-        )
-
-        if no_pending:
-            production = next(
-                (
-                    market
-                    for market in ranked
-                    if market.get("is_premium")
-                ),
-                None,
-            )
-
-            shadow = next(
-                (
-                    market
-                    for market in ranked
-                    if (
-                        market.get("candidate_prediction")
-                        is not None
-                        and market.get("market_quality")
-                        in {
-                            "TEN_DIGIT",
-                            "LOW_SAMPLE",
-                        }
-                        and _number(
-                            market.get("edge_score")
-                        ) >= SHADOW_MIN_EDGE
-                        and _number(
-                            market.get("confidence")
-                        ) >= SHADOW_MIN_CONFIDENCE
-                    )
-                ),
-                None,
-            )
-
-            research_candidates = [
-                market
-                for market in ranked
-                if (
-                    market.get("candidate_prediction")
-                    is not None
-                    and market.get("market_quality")
-                    in {
-                        "TEN_DIGIT",
-                        "LOW_SAMPLE",
-                    }
-                    and sum(
-                        1
-                        for weight in (
-                            market.get("model_weights")
-                            or {}
-                        ).values()
-                        if _number(weight) > 0.0
-                    ) >= 2
-                    and bool(
-                        market.get("model_predictions")
-                    )
-                )
-            ]
-
-            research = None
-
-            if research_candidates:
-                research_count = int(
-                    (
-                        statistics.get("research")
-                        or {}
-                    ).get(
-                        "resolved",
-                        0,
-                    )
-                )
-
-                research = research_candidates[
-                    research_count
-                    % len(research_candidates)
-                ]
-
-            if production is not None:
-                selected = production
-                selection_mode = "PREMIUM"
-
-            elif shadow is not None:
-                selected = shadow
-                selection_mode = "SHADOW"
-
-            else:
-                selected = research
-                selection_mode = (
-                    "RESEARCH"
-                    if research is not None
-                    else None
-                )
-
-            if selected is not None:
-                symbol = selected["symbol"]
-                source_tick = latest_ticks.get(
-                    symbol
-                )
-
-                if source_tick is not None:
-                    record = {
-                        "symbol": symbol,
-                        "prediction": (
-                            selected.get(
-                                "published_prediction"
-                            )
-                            if selection_mode == "PREMIUM"
-                            else None
-                        ),
-                        "candidate": selected.get(
-                            "candidate_prediction"
-                        ),
-                        "confidence": selected.get(
-                            "confidence"
-                        ),
-                        "edge": selected.get(
-                            "edge_score"
-                        ),
-                        "edge_grade": selected.get(
-                            "edge_grade"
-                        ),
-                        "regime": selected.get(
-                            "regime"
-                        ),
-                        "model_predictions": selected.get(
-                            "model_predictions",
-                            {},
-                        ),
-                        "model_weights": selected.get(
-                            "model_weights",
-                            {},
-                        ),
-
-                        # V8.3 Phase 3A telemetry snapshot.
-                        # These fields are observational only.
-                        "edge_components": selected.get(
-                            "edge_components",
-                            {},
-                        ),
-                        "model_statistics": selected.get(
-                            "model_statistics",
-                            {},
-                        ),
-                        "regime_confidence": selected.get(
-                            "regime_confidence"
-                        ),
-                        "stability_score": selected.get(
-                            "stability_score"
-                        ),
-                        "confidence_margin": selected.get(
-                            "confidence_margin"
-                        ),
-
-                        "calibrated_confidence": selected.get(
-                            "calibrated_confidence"
-                        ),
-                        "rolling_accuracy": selected.get(
-                            "rolling_accuracy"
-                        ),
-                        "rolling_samples": selected.get(
-                            "rolling_samples"
-                        ),
-                        "rolling_lower_bound": selected.get(
-                            "rolling_lower_bound"
-                        ),
-                        "rolling_upper_bound": selected.get(
-                            "rolling_upper_bound"
-                        ),
-
-                        "last20_accuracy": selected.get(
-                            "last20_accuracy"
-                        ),
-                        "last20_samples": selected.get(
-                            "last20_samples"
-                        ),
-
-                        "last50_accuracy": selected.get(
-                            "last50_accuracy"
-                        ),
-                        "last50_samples": selected.get(
-                            "last50_samples"
-                        ),
-                        "last50_upper_bound": selected.get(
-                            "last50_upper_bound"
-                        ),
-
-                        "last100_accuracy": selected.get(
-                            "last100_accuracy"
-                        ),
-                        "last100_samples": selected.get(
-                            "last100_samples"
-                        ),
-
-                        "market_qualified": selected.get(
-                            "market_qualified"
-                        ),
-                        "statistically_above_baseline": (
-                            selected.get(
-                                "statistically_above_baseline"
-                            )
-                        ),
-                        "recent_deterioration": selected.get(
-                            "recent_deterioration"
-                        ),
-                        "evidence_scope": selected.get(
-                            "evidence_scope"
-                        ),
-
-                        "current_streak_result": selected.get(
-                            "current_streak_result"
-                        ),
-                        "current_streak_count": selected.get(
-                            "current_streak_count"
-                        ),
-
-                        "premium": (
-                            selection_mode == "PREMIUM"
-                        ),
-                        "source_epoch": (
-                            source_tick["epoch"]
-                        ),
-                        "source_quote": (
-                            source_tick["quote"]
-                        ),
-                    }
-
-                    if not _generation_is_current(
-                        generation
-                    ):
-                        return
-
-                    saved = learning.create_prediction(
-                        record
-                    )
-
-                    if saved:
-                        learning.tag_pending_prediction(
-                            symbol,
-                            selection_mode=selection_mode,
-                            market_family=selected.get(
-                                "market_family",
-                                "UNKNOWN",
-                            ),
-                            market_quality=selected.get(
-                                "market_quality",
-                                "UNKNOWN",
-                            ),
-                        )
-
-        if not _generation_is_current(generation):
-            return
-
-        dashboard_state = {
-            **dashboard,
+    if selected is None:
+        return {
+            "status": "collecting",
+            "message": (
+                "Collecting Deriv Volatility tick data..."
+            ),
+            "decision": "WAIT",
+            "prediction": None,
+            "confidence": 0.0,
+            "edge": 0.0,
             "markets_monitoring": sorted(
                 VOLATILITY_SYMBOLS
             ),
-            "market_count": len(markets),
-            "live_market_count": sum(
-                1
-                for market in markets.values()
-                if market.get("status") == "live"
+            "market_count": len(
+                VOLATILITY_SYMBOLS
             ),
-            "message": (
-                "Scanning all Volatility indices. "
-                "Only validated standard Volatility "
-                "signals are published."
+            "resolved_predictions": (
+                learning.total_resolved()
             ),
-            "honest_statistics": statistics,
-            "runner_generation": generation,
         }
 
-        await publish_state(
-            dashboard_state,
-            markets=markets,
-            opportunities=_opportunity_payload(
-                ranked
-            ),
-            statistics=statistics,
-        )
+    return {
+        "status": "live",
+        "message": (
+            "Verified premium signal available."
+            if selected.get("is_premium")
+            else "Scanning all Deriv Volatility markets."
+        ),
+        "decision": (
+            "SIGNAL"
+            if selected.get("is_premium")
+            else "WAIT"
+        ),
+        "prediction": selected.get(
+            "published_prediction"
+        ),
+        "confidence": _number(
+            selected.get("calibrated_confidence")
+        ),
+        "edge": _number(
+            selected.get("edge_score")
+        ),
+        "market": selected.get("symbol"),
+        "markets_monitoring": sorted(
+            VOLATILITY_SYMBOLS
+        ),
+        "market_count": len(
+            VOLATILITY_SYMBOLS
+        ),
+        "resolved_predictions": (
+            learning.total_resolved()
+        ),
+    }
 
 
 async def run_once():
     generation = _activate_generation()
 
     discovery = MarketDiscovery()
-    discovered = await discovery.fetch()
-
-    markets = [
-        market
-        for market in discovered
-        if market.get("symbol")
-        in VOLATILITY_SYMBOLS
-    ]
-
-    discovered_symbols = {
-        market["symbol"]
-        for market in markets
-    }
-
-    missing = (
-        VOLATILITY_SYMBOLS
-        - discovered_symbols
+    engine = MarketEngine()
+    model_memory = MarketModelMemory()
+    ai = MultiMarketAI(engine, model_memory)
+    learning = MultiMarketLearning(
+        model_memory=model_memory
+    )
+    quality_gate = MarketQualityGate()
+    accuracy_gate = ProductionAccuracyGate(
+        learning=learning,
     )
 
-    if missing:
-        _invalidate_generation(generation)
-        raise RuntimeError(
-            "Required Volatility markets "
-            f"not discovered: {sorted(missing)}"
-        )
-
-    market_engine = MarketEngine(
-        max_history=1000
+    executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix=(
+            "dsnpfx-market-scan"
+        ),
     )
 
     latest_ticks = {}
 
-    model_memory = MarketModelMemory(
-        database=(
-            "backend/data/"
-            "market_model_memory.db"
-        )
-    )
-
-    learning = MultiMarketLearning(
-        model_memory=model_memory,
-        database=(
-            "backend/data/"
-            "multi_market_learning.db"
-        ),
-    )
-
-    ai = MultiMarketAI(
-        market_engine,
-        model_memory,
-    )
-
-    quality_gate = MarketQualityGate(
-        database=(
-            "backend/data/"
-            "multi_market_learning.db"
-        ),
-        min_samples=100,
-        min_distinct_digits=10,
-        max_top_digit_share=30.0,
-    )
-
-    accuracy_gate = ProductionAccuracyGate(
-        database=(
-            "backend/data/"
-            "multi_market_learning.db"
-        ),
-        minimum_samples=100,
-        rolling_window=100,
-        minimum_rolling_accuracy=15.0,
-        minimum_edge=70.0,
-        minimum_raw_confidence=66.0,
-        minimum_agreeing_models=2,
-    )
-
-    worker_executor = ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix=(
-            f"dsnpfx-scan-{generation}"
-        ),
-    )
-
-    receiver = None
-    scanner = None
-
-    await publish_state(
-        {
-            "status": "collecting",
-            "symbol": "R_100",
-            "message": (
-                "Connecting to 10 Volatility markets..."
-            ),
-            "markets_monitoring": sorted(
-                VOLATILITY_SYMBOLS
-            ),
-            "market_count": len(markets),
-            "decision": "WAIT",
-            "is_premium": False,
-            "runner_generation": generation,
-        },
-        markets={},
-        opportunities=[],
-        statistics=learning.honest_statistics(
-            rolling_limit=100
-        ),
-    )
-
     try:
+        markets = await discovery.fetch()
+        markets = [
+            market
+            for market in markets
+            if market.get("symbol")
+            in VOLATILITY_SYMBOLS
+        ]
+
+        if not markets:
+            raise RuntimeError(
+                "No eligible Deriv Volatility "
+                "markets discovered"
+            )
+
+        discovery_by_symbol = {
+            market.get("symbol"): dict(market)
+            for market in markets
+            if market.get("symbol")
+        }
+
+        for market in markets:
+            symbol = market["symbol"]
+            engine.add_market(symbol)
+            family = attach_family_metadata(
+                model_memory,
+                symbol,
+            )
+            print(
+                "DISCOVERED:",
+                symbol,
+                market.get("name"),
+                "family=",
+                family,
+            )
+
         async with websockets.connect(
             WS_URL,
             ping_interval=20,
-            ping_timeout=90,
-            close_timeout=10,
+            ping_timeout=30,
+            close_timeout=5,
             max_queue=None,
         ) as websocket:
-            print(
-                "DSNPFX VOLATILITY WEB RUNNER V8"
-            )
-            print(
-                f"Generation: {generation}"
-            )
-            print(
-                f"Subscribed markets: {len(markets)}"
-            )
-
-            for market in markets:
-                print(
-                    " ",
-                    market["symbol"],
-                    "|",
-                    market["name"],
-                )
-
             await subscribe_to_markets(
                 websocket,
                 markets,
             )
 
-            receiver = asyncio.create_task(
-                receive_ticks(
-                    websocket,
-                    market_engine,
-                    learning,
-                    latest_ticks,
-                ),
-                name=f"dsnpfx-receiver-{generation}",
+            tick_stream = receive_ticks(
+                websocket,
+                engine,
+                discovery_by_symbol,
+                latest_ticks,
             )
 
-            scanner = asyncio.create_task(
-                _scan_loop(
-                    ai,
-                    learning,
-                    latest_ticks,
-                    quality_gate,
-                    accuracy_gate,
-                    worker_executor,
-                    generation,
-                ),
-                name=f"dsnpfx-scanner-{generation}",
+            async def scanner_loop():
+                while True:
+                    if not _generation_is_current(
+                        generation
+                    ):
+                        return
+
+                    results = await _run_blocking(
+                        executor,
+                        ai.scan,
+                    )
+
+                    if not _generation_is_current(
+                        generation
+                    ):
+                        return
+
+                    _attach_quality(
+                        results,
+                        quality_gate,
+                    )
+
+                    market_payloads = {
+                        result["symbol"]: _market_payload(
+                            result,
+                            latest_ticks,
+                        )
+                        for result in results
+                        if result.get("symbol")
+                    }
+
+                    await _run_blocking(
+                        executor,
+                        learning.observe,
+                        results,
+                        latest_ticks,
+                    )
+
+                    await _run_blocking(
+                        executor,
+                        _apply_production_accuracy_gate,
+                        market_payloads,
+                        accuracy_gate,
+                    )
+
+                    if not _generation_is_current(
+                        generation
+                    ):
+                        return
+
+                    ranked = _rank_markets(
+                        market_payloads
+                    )
+                    opportunities = [
+                        market
+                        for market in ranked
+                        if market.get(
+                            "is_premium",
+                            False,
+                        )
+                    ]
+
+                    statistics = (
+                        _statistics_payload(
+                            ranked,
+                            engine,
+                            quality_gate,
+                        )
+                    )
+                    state = _state_payload(
+                        ranked,
+                        opportunities,
+                        engine,
+                        learning,
+                    )
+
+                    await publish_state(
+                        state,
+                        markets={
+                            market["symbol"]: market
+                            for market in ranked
+                        },
+                        opportunities=opportunities,
+                        statistics=statistics,
+                    )
+
+                    await asyncio.sleep(
+                        SCAN_INTERVAL
+                    )
+
+            scanner_task = asyncio.create_task(
+                scanner_loop()
             )
 
-            done, pending = await asyncio.wait(
-                {
-                    receiver,
-                    scanner,
-                },
-                return_when=(
-                    asyncio.FIRST_EXCEPTION
-                ),
-            )
-
-            _invalidate_generation(
-                generation
-            )
-
-            for task in pending:
-                task.cancel()
-
-            await asyncio.gather(
-                *pending,
-                return_exceptions=True,
-            )
-
-            for task in done:
-                if task.cancelled():
-                    continue
-
-                exception = task.exception()
-
-                if exception is not None:
-                    raise exception
+            try:
+                await tick_stream
+            finally:
+                scanner_task.cancel()
+                await asyncio.gather(
+                    scanner_task,
+                    return_exceptions=True,
+                )
 
     finally:
         _invalidate_generation(
             generation
         )
-
-        tasks = [
-            task
-            for task in (
-                receiver,
-                scanner,
-            )
-            if task is not None
-            and not task.done()
-        ]
-
-        for task in tasks:
-            task.cancel()
-
-        if tasks:
-            await asyncio.gather(
-                *tasks,
-                return_exceptions=True,
-            )
-
-        # Critical ordering:
-        # 1. asyncio tasks stop.
-        # 2. worker thread drains fully.
-        # 3. SQLite-backed resources close.
-        _shutdown_executor(
-            worker_executor
+        await asyncio.to_thread(
+            _shutdown_executor,
+            executor,
         )
-
-        _safe_close(accuracy_gate)
-        _safe_close(quality_gate)
         _safe_close(learning)
         _safe_close(model_memory)
-
-
-async def run_forever():
-    while True:
-        try:
-            await run_once()
-
-        except asyncio.CancelledError:
-            raise
-
-        except Exception as error:
-            print(
-                "VOLATILITY WEBSITE ERROR:",
-                type(error).__name__,
-                error,
-            )
-
-            await publish_state(
-                {
-                    "status": "reconnecting",
-                    "message": (
-                        "Volatility feed disconnected. "
-                        "Lifecycle-safe reconnect starting..."
-                    ),
-                    "decision": "WAIT",
-                    "is_premium": False,
-                    "markets_monitoring": sorted(
-                        VOLATILITY_SYMBOLS
-                    ),
-                    "market_count": 10,
-                },
-            )
-
-            await asyncio.sleep(
-                RECONNECT_DELAY
-            )
+        _safe_close(quality_gate)
