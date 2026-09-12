@@ -6,16 +6,18 @@ from backend.core.adaptive_forward_ensemble import get_adaptive_forward_ensemble
 from backend.core.ai_pipeline import DSPFXAIPipeline
 from backend.core.edge_score import EdgeScoreEngine
 from backend.core.market_regime import MarketRegime
+from backend.core.precision_prediction_selector import select_precision_candidate
 from backend.core.premium_gate import PremiumGate
 
 
 class MultiMarketAI:
-    """Market analyzer with one authoritative, forward-verified prediction path.
+    """Market analyzer with one precision-first, forward-verified prediction path.
 
     Frequency, Markov, sequence and research models may all generate raw
-    candidates for prospective auditing. Only the adaptive forward ensemble may
-    publish the single DSNPFX candidate, and only after its conservative
-    break-even-aware verification requirements are satisfied.
+    candidates for prospective auditing. V10 adaptive forward evidence first
+    verifies a candidate digit. V12 then requires an active, independently
+    validated conditional edge to confirm that same digit before it can become
+    the single DSNPFX published candidate.
     """
 
     MODELS = ("frequency", "markov", "sequence")
@@ -87,7 +89,7 @@ class MultiMarketAI:
         }
 
     @staticmethod
-    def _conservative_confidence(adaptive_decision):
+    def _conservative_confidence(adaptive_decision, precision_decision=None):
         """Use audited forward evidence, never vote share, as confidence."""
         if not adaptive_decision.get("verified_for_use"):
             return 0.0
@@ -108,7 +110,20 @@ class MultiMarketAI:
                 conservative.append(float(row.get("recent_lower_95_pct") or 0.0))
             except (TypeError, ValueError):
                 continue
-        return round(min(conservative), 2) if conservative else 0.0
+        if not conservative:
+            return 0.0
+
+        confidence = min(conservative)
+        if precision_decision and precision_decision.get("verified_for_use"):
+            try:
+                conditional_lower = float(
+                    precision_decision.get("validation_lower_95_pct") or 0.0
+                )
+                if conditional_lower > 0.0:
+                    confidence = min(confidence, conditional_lower)
+            except (TypeError, ValueError):
+                pass
+        return round(confidence, 2)
 
     def _stability(self, symbol, candidate):
         history = self._candidate_history[symbol]
@@ -186,8 +201,6 @@ class MultiMarketAI:
                 active_predictions[model] = int(prediction)
                 active_weights[model] = weight
 
-            # Keep the old vote only as a research diagnostic. It can no longer
-            # become the published DSNPFX prediction.
             research_candidate, research_vote_share, research_vote_margin = (
                 self._weighted_candidate(active_predictions, active_weights)
             )
@@ -198,14 +211,35 @@ class MultiMarketAI:
                 adaptive_candidates,
             )
 
+            # Build a complete research snapshot using only information that
+            # exists before the next tick. The V12 selector compares the current
+            # active condition with independently resolved conditional evidence.
+            selector_result = {
+                "symbol": symbol,
+                "regime": regime["regime"],
+                "raw_model_predictions": {
+                    model: raw_predictions.get(model)
+                    for model in self.MODELS
+                },
+                "model_predictions": active_predictions.copy(),
+                "model_metadata": metadata,
+            }
+            precision_decision = select_precision_candidate(
+                selector_result,
+                adaptive_decision,
+            )
+
             candidate = (
-                adaptive_decision.get("candidate")
-                if adaptive_decision.get("verified_for_use")
+                precision_decision.get("candidate")
+                if precision_decision.get("verified_for_use")
                 else None
             )
-            confidence = self._conservative_confidence(adaptive_decision)
+            confidence = self._conservative_confidence(
+                adaptive_decision,
+                precision_decision,
+            ) if candidate is not None else 0.0
             confidence_margin = (
-                float(adaptive_decision.get("weight_share_pct") or 0.0)
+                float(precision_decision.get("conservative_edge_pp") or 0.0)
                 if candidate is not None
                 else 0.0
             )
@@ -230,15 +264,17 @@ class MultiMarketAI:
                 edge_result=edge,
             )
 
-            adaptive_blockers = []
-            if candidate is None:
-                adaptive_blockers.append(
-                    "No single forward-verified adaptive prediction yet"
+            blockers = []
+            if not adaptive_decision.get("verified_for_use"):
+                blockers.append("No forward-verified adaptive prediction yet")
+            elif not precision_decision.get("verified_for_use"):
+                blockers.append(
+                    "Adaptive digit lacks active independently validated conditional edge"
                 )
 
             blocking_reasons = list(
                 dict.fromkeys(
-                    adaptive_blockers
+                    blockers
                     + edge.get("blocking_reasons", [])
                     + premium.get("blocking_reasons", [])
                     + (["Bootstrap shadow learning only"] if bootstrap_learning else [])
@@ -262,7 +298,8 @@ class MultiMarketAI:
                 "regime": regime["regime"],
                 "regime_confidence": regime["confidence"],
                 "stability_score": stability_score,
-                "prediction_source": "ADAPTIVE_FORWARD_ENSEMBLE_V10",
+                "prediction_source": "V12_PRECISION_CONDITIONAL_GATE",
+                "precision_decision": precision_decision,
                 "adaptive_decision": adaptive_decision,
                 "adaptive_candidates": adaptive_candidates,
                 "research_candidate": research_candidate,
