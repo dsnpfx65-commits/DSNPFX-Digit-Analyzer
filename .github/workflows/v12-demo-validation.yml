@@ -1,0 +1,53 @@
+name: DSNPFX V12 demo validation
+
+on:
+  push:
+    branches:
+      - demo-auto-execution-v12
+    paths:
+      - .github/workflows/v12-demo-validation.yml
+      - backend/core/v11_selective_demo_trader.py
+      - backend/core/proposal_quote_service.py
+      - backend/core/v9_shadow_collector.py
+      - tests/test_v11_fresh_break_even_gate.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-demo-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out demo branch
+        uses: actions/checkout@v4
+        with:
+          ref: demo-auto-execution-v12
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -q -r requirements.txt
+          python -m pip install -q pytest
+
+      - name: Compile demo execution safety path
+        run: |
+          python -m py_compile \
+            backend/core/v11_selective_demo_trader.py \
+            backend/core/proposal_quote_service.py \
+            backend/core/v9_shadow_collector.py
+
+      - name: Run fresh break-even gate tests
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q tests/test_v11_fresh_break_even_gate.py
+
+      - name: Run repository tests
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q tests
