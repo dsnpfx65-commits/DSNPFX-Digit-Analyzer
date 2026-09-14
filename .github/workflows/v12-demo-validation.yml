@@ -7,9 +7,11 @@ on:
     paths:
       - .github/workflows/v12-demo-validation.yml
       - backend/core/v11_selective_demo_trader.py
+      - backend/core/v12_demo_auto_executor.py
       - backend/core/proposal_quote_service.py
       - backend/core/v9_shadow_collector.py
       - tests/test_v11_fresh_break_even_gate.py
+      - tests/test_v12_demo_auto_executor.py
   workflow_dispatch:
 
 permissions:
@@ -39,13 +41,17 @@ jobs:
         run: |
           python -m py_compile \
             backend/core/v11_selective_demo_trader.py \
+            backend/core/v12_demo_auto_executor.py \
             backend/core/proposal_quote_service.py \
             backend/core/v9_shadow_collector.py
 
-      - name: Run fresh break-even gate tests
+      - name: Run demo execution safety tests
         env:
           PYTHONPATH: .
-        run: python -m pytest -q tests/test_v11_fresh_break_even_gate.py
+        run: |
+          python -m pytest -q \
+            tests/test_v11_fresh_break_even_gate.py \
+            tests/test_v12_demo_auto_executor.py
 
       - name: Run repository tests
         env:
