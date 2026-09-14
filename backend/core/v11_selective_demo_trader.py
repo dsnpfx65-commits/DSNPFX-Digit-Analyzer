@@ -5,7 +5,8 @@ ledger as historical evidence, but new paper trades are allowed only when a
 condition has independently validated economic edge: enough discovery samples,
 enough validation samples, and the validation 95% Wilson lower bound above the
 recorded live DIGITMATCH break-even. A fresh exact-barrier Deriv proposal is
-still required before a paper trade can be committed.
+still required before a paper trade can be committed, and its exact break-even
+must also be beaten by the validation lower bound.
 """
 from __future__ import annotations
 
@@ -145,22 +146,30 @@ class V11SelectiveDemoTrader:
         try:
             prediction = int(selection["prediction"])
             source_epoch = int(selection["source_epoch"])
-            break_even = float(proposal["break_even_probability_pct"])
+            fresh_break_even = float(proposal["break_even_probability_pct"])
         except (KeyError, TypeError, ValueError):
             return False
         validation = selection.get("validation") or {}
         avg_be = validation.get("average_break_even_pct")
+        validation_lower = float(validation.get("lower_95_pct") or 0.0)
         if int(validation.get("resolved") or 0) < MIN_VALIDATION_TO_TRADE:
             return False
-        if avg_be is None or float(validation.get("lower_95_pct") or 0.0) <= float(avg_be):
+        if avg_be is None or validation_lower <= float(avg_be):
+            return False
+        # Final economic gate: historical validation must still clear the exact
+        # fresh proposal being considered now. This prevents a trade when Deriv's
+        # current payout worsens after the condition originally qualified.
+        if fresh_break_even <= 0 or validation_lower <= fresh_break_even:
             return False
         if str(proposal.get("symbol") or symbol) != symbol:
+            return False
+        if str(proposal.get("contract_type") or "DIGITMATCH").upper() != "DIGITMATCH":
             return False
         try:
             proposal_digit = int(proposal.get("digit"))
         except (TypeError, ValueError):
             return False
-        if proposal_digit != prediction or not 0 <= prediction <= 9 or break_even <= 0:
+        if proposal_digit != prediction or not 0 <= prediction <= 9:
             return False
         ask, payout = proposal.get("ask_price"), proposal.get("payout")
         try:
@@ -184,7 +193,7 @@ class V11SelectiveDemoTrader:
             """, (
                 datetime.now().isoformat(), CURRENT_VERSION, symbol, selection["model"],
                 selection["condition_family"], selection["condition_value"], prediction,
-                source_epoch, selection["source_quote"], break_even, ask, payout,
+                source_epoch, selection["source_quote"], fresh_break_even, ask, payout,
                 str(proposal.get("proposal_id") or ""),
             ))
             self.connection.commit()
@@ -254,7 +263,7 @@ class V11SelectiveDemoTrader:
             "mode": CURRENT_VERSION,
             "live_buy_enabled": False,
             "pricing_mode": "ON_DEMAND_EXACT_BARRIER",
-            "gate_mode": "VALIDATION_L95_ABOVE_LIVE_BREAK_EVEN",
+            "gate_mode": "VALIDATION_L95_ABOVE_FRESH_PROPOSAL_BREAK_EVEN",
             "eligible_conditions": self.eligible_count(),
             "minimum_discovery": MIN_DISCOVERY,
             "minimum_validation_to_demo_trade": MIN_VALIDATION_TO_TRADE,
