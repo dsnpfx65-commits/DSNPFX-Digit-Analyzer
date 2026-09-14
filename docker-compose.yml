@@ -1,0 +1,29 @@
+services:
+  dsnpfx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dsnpfx-market-insight
+    restart: unless-stopped
+    ports:
+      - "${DSNPFX_PORT:-8000}:8000"
+    environment:
+      PORT: "8000"
+      PYTHONUNBUFFERED: "1"
+      DERIV_PROPOSAL_CURRENCY: "${DERIV_PROPOSAL_CURRENCY:-USD}"
+      DSNPFX_DEMO_EXECUTION_ENABLED: "${DSNPFX_DEMO_EXECUTION_ENABLED:-0}"
+      DSNPFX_DEMO_STAKE: "${DSNPFX_DEMO_STAKE:-0.35}"
+      DSNPFX_MAX_CONSECUTIVE_LOSSES: "${DSNPFX_MAX_CONSECUTIVE_LOSSES:-3}"
+      DSNPFX_SESSION_STOP_LOSS_UNITS: "${DSNPFX_SESSION_STOP_LOSS_UNITS:-3}"
+      DSNPFX_SESSION_TAKE_PROFIT_UNITS: "${DSNPFX_SESSION_TAKE_PROFIT_UNITS:-5}"
+    volumes:
+      - dsnpfx-data:/app/backend/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  dsnpfx-data:
