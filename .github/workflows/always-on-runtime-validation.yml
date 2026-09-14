@@ -1,0 +1,62 @@
+name: DSNPFX always-on runtime validation
+
+on:
+  push:
+    branches:
+      - demo-auto-execution-v12
+    paths:
+      - Dockerfile
+      - docker-compose.yml
+      - .dockerignore
+      - requirements.txt
+      - backend/**
+      - .github/workflows/always-on-runtime-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-container-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: demo-auto-execution-v12
+
+      - name: Build runtime image
+        run: docker build -t dsnpfx-market-insight:test .
+
+      - name: Start analyzer container
+        run: docker run -d --name dsnpfx-runtime -p 8000:8000 dsnpfx-market-insight:test
+
+      - name: Wait for health endpoint
+        run: |
+          python - <<'PY'
+          import json, time, urllib.request
+          deadline = time.time() + 90
+          last = None
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5) as r:
+                      payload = json.load(r)
+                  if payload.get('status') == 'ok':
+                      print(payload)
+                      raise SystemExit(0)
+                  last = payload
+              except Exception as exc:
+                  last = repr(exc)
+              time.sleep(3)
+          print('last health result:', last)
+          raise SystemExit(1)
+          PY
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs dsnpfx-runtime || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f dsnpfx-runtime || true
